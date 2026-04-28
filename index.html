@@ -1836,11 +1836,18 @@ async function computeZen(cfg, zenRows, orderRows) {
 
 async function computeDLocal(cfg, dlRows, ppRows) {
   const isFinal = s => { const n = normStatus(s); return n === 'approved' || n === 'declined'; };
-  const dlFiltered = dlRows.filter(r => (r[cfg.filterCol] || '') === cfg.filterVal).filter(r => isFinal(r[cfg.statusCol]));
+
+  // Use getCol for case-insensitive access — dLocal quarterly/monthly reports differ in capitalisation
+  const dlFiltered = dlRows
+    .filter(r => (getCol(r, cfg.filterCol) || '').toString().trim() === cfg.filterVal)
+    .filter(r => isFinal(getCol(r, cfg.statusCol)));
   const ppFiltered = ppRows.filter(r => (r[cfg.ppBrandCol] || '').toLowerCase() === cfg.ppBrandFilter && (r[cfg.ppTypeCol] || '').toLowerCase() === cfg.ppTypeFilter && isFinal(r[cfg.ppStatusCol]));
 
   const dlMap = new Map();
-  for (const row of dlFiltered) { const id = (row[cfg.idCol] || '').toString().trim(); if (id) { if (!dlMap.has(id)) dlMap.set(id, []); dlMap.get(id).push(row); } }
+  for (const row of dlFiltered) {
+    const id = (getCol(row, cfg.idCol) || '').toString().trim();
+    if (id) { if (!dlMap.has(id)) dlMap.set(id, []); dlMap.get(id).push(row); }
+  }
   const ppMap = new Map();
   for (const row of ppFiltered) { const id = (row[cfg.ppIdCol] || '').toString().trim(); if (!ppMap.has(id)) ppMap.set(id, row); else { const ex = ppMap.get(id); if (normStatus(ex[cfg.ppStatusCol]) !== 'approved' && normStatus(row[cfg.ppStatusCol]) === 'approved') ppMap.set(id, row); } }
 
@@ -1850,14 +1857,24 @@ async function computeDLocal(cfg, dlRows, ppRows) {
   for (const [invId, dlList] of dlMap.entries()) {
     const ppRow = ppMap.get(invId); seenIds.add(invId);
     for (const dlRow of dlList) {
-      const dlStatus = dlRow[cfg.statusCol] || '';
-      const dlBalAmt = parseFloat(dlRow[cfg.amountCol]) || 0;
-      if (!ppRow) { matched.push({ bpId: invId, matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: dlStatus, bpAmount: 0, pspAmount: dlBalAmt, currency: dlRow[cfg.currencyCol], email: dlRow[cfg.emailCol] || '', paymentMethod: dlRow[cfg.methodCol] || '', pspTxId: dlRow[cfg.txIdCol] || '', bpTxId: '', country: dlRow[cfg.countryCol] || '', cardType: dlRow[cfg.cardBrandCol] || '', lastFour: (dlRow[cfg.cardLastFourCol] || '').toString().slice(-4), bpDate: '', pspDate: String(dlRow[cfg.dateCol] || '').slice(0, 19) }); continue; }
+      const dlStatus = getCol(dlRow, cfg.statusCol) || '';
+      const dlBalAmt = parseFloat(getCol(dlRow, cfg.amountCol)) || 0;
+      const dlCurrency = getCol(dlRow, cfg.currencyCol) || '';
+      const dlEmail = getCol(dlRow, cfg.emailCol) || '';
+      const dlMethod = getCol(dlRow, cfg.methodCol) || '';
+      const dlTxId = getCol(dlRow, cfg.txIdCol) || '';
+      const dlCountry = getCol(dlRow, cfg.countryCol) || '';
+      const dlCardBrand = getCol(dlRow, cfg.cardBrandCol) || '';
+      const dlLastFour = (getCol(dlRow, cfg.cardLastFourCol) || '').toString().slice(-4);
+      const dlDate = String(getCol(dlRow, cfg.dateCol) || '').slice(0, 19);
+
+      if (!ppRow) { matched.push({ bpId: invId, matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: dlStatus, bpAmount: 0, pspAmount: dlBalAmt, currency: dlCurrency, email: dlEmail, paymentMethod: dlMethod, pspTxId: dlTxId, bpTxId: '', country: dlCountry, cardType: dlCardBrand, lastFour: dlLastFour, bpDate: '', pspDate: dlDate }); continue; }
+
       const ppStatus = ppRow[cfg.ppStatusCol] || '';
       const ppAmount = parseFloat(ppRow[cfg.ppAmountCol]) || 0;
       const statusMatch = normStatus(dlStatus) === normStatus(ppStatus);
       const amtMatch = (dlBalAmt !== 0) && (Math.abs(dlBalAmt - ppAmount) < 0.01);
-      const record = { bpId: invId, bpStatus: ppStatus, pspStatus: dlStatus, bpAmount: ppAmount, pspAmount: dlBalAmt, currency: dlRow[cfg.currencyCol] || ppRow[cfg.ppCurrencyCol], email: ppRow[cfg.ppEmailCol] || dlRow[cfg.emailCol] || '', paymentMethod: dlRow[cfg.methodCol] || '', pspTxId: dlRow[cfg.txIdCol] || '', bpTxId: ppRow[cfg.ppTxIdCol] || '', country: ppRow[cfg.ppCountryCol] || dlRow[cfg.countryCol] || '', cardType: dlRow[cfg.cardBrandCol] || '', lastFour: (dlRow[cfg.cardLastFourCol] || '').toString().slice(-4), bpDate: String(ppRow[cfg.ppDateCol] || '').slice(0, 19), pspDate: String(dlRow[cfg.dateCol] || '').slice(0, 19) };
+      const record = { bpId: invId, bpStatus: ppStatus, pspStatus: dlStatus, bpAmount: ppAmount, pspAmount: dlBalAmt, currency: dlCurrency || ppRow[cfg.ppCurrencyCol], email: ppRow[cfg.ppEmailCol] || dlEmail, paymentMethod: dlMethod, pspTxId: dlTxId, bpTxId: ppRow[cfg.ppTxIdCol] || '', country: ppRow[cfg.ppCountryCol] || dlCountry, cardType: dlCardBrand, lastFour: dlLastFour, bpDate: String(ppRow[cfg.ppDateCol] || '').slice(0, 19), pspDate: dlDate };
       if (!statusMatch) statusMismatch.push({ ...record, matchType: 'STATUS_MISMATCH' });
       else if (!amtMatch) amountMismatch.push({ ...record, matchType: 'AMOUNT_MISMATCH' });
       else matched.push({ ...record, matchType: 'MATCHED' });
@@ -1869,7 +1886,7 @@ async function computeDLocal(cfg, dlRows, ppRows) {
   const unmatchedPSP = matched.filter(r => r.matchType === 'PSP_ONLY');
   const approvedRecords = cleanMatched.filter(r => normStatus(r.pspStatus) === 'approved');
   const totalApprovedRevenue = approvedRecords.reduce((s, r) => s + r.pspAmount, 0);
-  const pspApproved = dlFiltered.filter(r => normStatus(r[cfg.statusCol]) === 'approved').length;
+  const pspApproved = dlFiltered.filter(r => normStatus(getCol(r, cfg.statusCol)) === 'approved').length;
   const pspApprovalRate = dlFiltered.length > 0 ? (pspApproved / dlFiltered.length * 100) : 0;
   const ppApproved = ppFiltered.filter(r => normStatus(r[cfg.ppStatusCol]) === 'approved').length;
   const approvalRate = ppFiltered.length > 0 ? (ppApproved / ppFiltered.length * 100) : 0;
@@ -2968,9 +2985,10 @@ async function runDLocalReconciliation(cfg, dlRows, ppRows) {
   const isFinal = s => { const n = normStatus(s); return n === 'approved' || n === 'declined'; };
 
   // Filter dLocal: Transaction Type = PAYMENT, final statuses (PAID/REJECTED) only
+  // Use getCol for case-insensitive access — quarterly/monthly reports differ in column capitalisation
   const dlFiltered = dlRows
-    .filter(r => (r[cfg.filterCol] || '') === cfg.filterVal)
-    .filter(r => isFinal(r[cfg.statusCol]));
+    .filter(r => (getCol(r, cfg.filterCol) || '').toString().trim() === cfg.filterVal)
+    .filter(r => isFinal(getCol(r, cfg.statusCol)));
 
   // Filter PayProcc: Brand = dl, Type = sale, final statuses (success/fail) only
   const ppFiltered = ppRows
@@ -2984,7 +3002,7 @@ async function runDLocalReconciliation(cfg, dlRows, ppRows) {
   // Build dLocal map: Invoice -> row
   const dlMap = new Map();
   for (const row of dlFiltered) {
-    const id = (row[cfg.idCol] || '').toString().trim();
+    const id = (getCol(row, cfg.idCol) || '').toString().trim();
     if (id) {
       if (!dlMap.has(id)) dlMap.set(id, []);
       dlMap.get(id).push(row);
@@ -3016,27 +3034,32 @@ async function runDLocalReconciliation(cfg, dlRows, ppRows) {
 
   // Drive from dLocal side — dLocal is the PSP (source of truth)
   for (const [invId, dlList] of dlMap.entries()) {
-    const ppRow = ppMap.get(invId);   // single best row or undefined
+    const ppRow = ppMap.get(invId);
     seenIds.add(invId);
 
     for (const dlRow of dlList) {
-      const dlStatus = dlRow[cfg.statusCol] || '';
-      const dlAmount = parseFloat(dlRow[cfg.amountCol]) || 0;
+      const dlStatus = getCol(dlRow, cfg.statusCol) || '';
+      const dlAmount = parseFloat(getCol(dlRow, cfg.amountCol)) || 0;
+      const dlCurrency = getCol(dlRow, cfg.currencyCol) || '';
+      const dlEmail = getCol(dlRow, cfg.emailCol) || '';
+      const dlMethod = getCol(dlRow, cfg.methodCol) || '';
+      const dlTxId = getCol(dlRow, cfg.txIdCol) || '';
+      const dlCountry = getCol(dlRow, cfg.countryCol) || '';
+      const dlCardBrand = getCol(dlRow, cfg.cardBrandCol) || '';
+      const dlLastFour = (getCol(dlRow, cfg.cardLastFourCol) || '').toString().slice(-4);
+      const dlDate = String(getCol(dlRow, cfg.dateCol) || '').slice(0, 19);
 
       if (!ppRow) {
-        // In dLocal but not in PayProcc
         matched.push({
           bpId: invId, matchType: 'PSP_ONLY',
           bpStatus: 'N/A', pspStatus: dlStatus,
           bpAmount: 0, pspAmount: dlAmount,
-          currency: dlRow[cfg.currencyCol],
-          email: dlRow[cfg.emailCol] || '',
-          paymentMethod: dlRow[cfg.methodCol] || '',
-          pspTxId: dlRow[cfg.txIdCol] || '', bpTxId: '',
-          country: dlRow[cfg.countryCol] || '',
-          cardType: dlRow[cfg.cardBrandCol] || '',
-          lastFour: (dlRow[cfg.cardLastFourCol] || '').toString().slice(-4),
-          bpDate: '', pspDate: String(dlRow[cfg.dateCol] || '').slice(0, 19)
+          currency: dlCurrency, email: dlEmail,
+          paymentMethod: dlMethod,
+          pspTxId: dlTxId, bpTxId: '',
+          country: dlCountry, cardType: dlCardBrand,
+          lastFour: dlLastFour,
+          bpDate: '', pspDate: dlDate
         });
         continue;
       }
@@ -3044,10 +3067,7 @@ async function runDLocalReconciliation(cfg, dlRows, ppRows) {
       const ppStatus = ppRow[cfg.ppStatusCol] || '';
       const ppAmount = parseFloat(ppRow[cfg.ppAmountCol]) || 0;
       const statusMatch = normStatus(dlStatus) === normStatus(ppStatus);
-      // Amount match rule:
-      // - Balance Amount non-zero: must equal PP Amount (real settlement amount comparison)
-      // - Balance Amount = 0: treated as amount mismatch — zero means dLocal didn't record a settled amount
-      const dlBalAmt = parseFloat(dlRow[cfg.amountCol]) || 0;
+      const dlBalAmt = parseFloat(getCol(dlRow, cfg.amountCol)) || 0;
       const amtMatch = (dlBalAmt !== 0) && (Math.abs(dlBalAmt - ppAmount) < 0.01);
 
       const record = {
@@ -3055,16 +3075,16 @@ async function runDLocalReconciliation(cfg, dlRows, ppRows) {
         bpStatus: ppStatus,
         pspStatus: dlStatus,
         bpAmount: ppAmount, pspAmount: dlAmount,
-        currency: dlRow[cfg.currencyCol] || ppRow[cfg.ppCurrencyCol],
-        email: ppRow[cfg.ppEmailCol] || dlRow[cfg.emailCol] || '',
-        paymentMethod: dlRow[cfg.methodCol] || '',
-        pspTxId: dlRow[cfg.txIdCol] || '',
+        currency: dlCurrency || ppRow[cfg.ppCurrencyCol],
+        email: ppRow[cfg.ppEmailCol] || dlEmail,
+        paymentMethod: dlMethod,
+        pspTxId: dlTxId,
         bpTxId: ppRow[cfg.ppTxIdCol] || '',
-        country: ppRow[cfg.ppCountryCol] || dlRow[cfg.countryCol] || '',
-        cardType: dlRow[cfg.cardBrandCol] || '',
-        lastFour: (dlRow[cfg.cardLastFourCol] || '').toString().slice(-4),
+        country: ppRow[cfg.ppCountryCol] || dlCountry,
+        cardType: dlCardBrand,
+        lastFour: dlLastFour,
         bpDate: String(ppRow[cfg.ppDateCol] || '').slice(0, 19),
-        pspDate: String(dlRow[cfg.dateCol] || '').slice(0, 19)
+        pspDate: dlDate
       };
 
       if (!statusMatch) {
@@ -3112,7 +3132,7 @@ async function runDLocalReconciliation(cfg, dlRows, ppRows) {
   const totalBPTx = ppFiltered.length;    // PayProcc rows
 
   // Approval rate: dLocal PAID / total dLocal PAYMENT (final)
-  const pspApproved = dlFiltered.filter(r => normStatus(r[cfg.statusCol]) === 'approved').length;
+  const pspApproved = dlFiltered.filter(r => normStatus(getCol(r, cfg.statusCol)) === 'approved').length;
   const pspApprovalRate = totalPSPTx > 0 ? (pspApproved / totalPSPTx * 100) : 0;
 
   // PayProcc approval rate: success / total (final)
@@ -3319,6 +3339,39 @@ async function runBPReconciliation(cfg, pspRows, bpRows) {
   await delay(400);
   renderResults();
   goToStep(4);
+}
+
+// Case-insensitive column value getter with known alias fallbacks
+// Handles dLocal monthly vs quarterly column name differences
+const COL_ALIASES = {
+  'balance amount':   ['amount ({balance_currency})', 'balance amount', 'amount'],
+  'balance currency': ['balance currency'],
+  'create date':      ['creation date', 'create date', 'created date', 'date'],
+  'payment method':   ['payment method', 'payment method name'],
+  'card last digits': ['card last digits', 'last 4', 'last four'],
+  'card brand':       ['card brand', 'card organisation', 'card type'],
+  'transaction type': ['transaction type'],
+};
+
+function getCol(row, colName) {
+  if (!row || !colName) return '';
+  // 1. Exact match
+  if (colName in row) return row[colName];
+  // 2. Case-insensitive match
+  const lower = colName.toLowerCase();
+  for (const key of Object.keys(row)) {
+    if (key.toLowerCase() === lower) return row[key];
+  }
+  // 3. Known alias fallbacks
+  const aliases = COL_ALIASES[lower];
+  if (aliases) {
+    for (const alias of aliases) {
+      for (const key of Object.keys(row)) {
+        if (key.toLowerCase() === alias) return row[key];
+      }
+    }
+  }
+  return '';
 }
 
 function normStatus(s) {
