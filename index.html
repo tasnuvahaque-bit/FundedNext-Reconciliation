@@ -1734,6 +1734,7 @@ const PSP_CONFIG = {
     emailCol: 'Email Address',
     txIdCol: 'Transaction ID',
     bpMidAlias: 'SafeCharge-CreditCard-MID-AE',
+    tzOffset: 4,  // Asia/Dubai (UTC+4)
     bpMatchField: 'midAlias'
   },
   'nuvei-eu': {
@@ -1750,6 +1751,7 @@ const PSP_CONFIG = {
     emailCol: 'Email Address',
     txIdCol: 'Transaction ID',
     bpMidAlias: 'SafeCharge-CreditCard-MID-EU',
+    tzOffset: 0,  // UTC
     bpMatchField: 'midAlias'
   },
   'unlimit': {
@@ -1765,6 +1767,7 @@ const PSP_CONFIG = {
     emailCol: 'Email',
     txIdCol: 'Payment ID',
     bpPspName: 'CardPay',
+    tzOffset: 0,  // UTC
     bpMatchField: 'pspName'
   },
   'payabl': {
@@ -1780,7 +1783,10 @@ const PSP_CONFIG = {
     emailCol: 'Email',
     txIdCol: 'Transaction ID',
     filterCol: 'Tx-Type',
-    filterVal: 'Capture',
+    filterVal: 'Capture',           // revenue rows = Capture only
+    filterValAuth: 'Authorisation', // kept for reference
+    tzOffset: 0,  // Date only — no conversion
+    useWorkableStatus: true,        // use Workable Status logic for approval rate
     bpPspName: 'Innatech',
     bpMatchField: 'pspName'
   },
@@ -1797,6 +1803,7 @@ const PSP_CONFIG = {
     emailCol: 'Billing Name',
     txIdCol: 'Reference',
     bpPspName: 'TrustPayments',
+    tzOffset: 0,  // Date only — no conversion
     bpMatchField: 'pspName'
   },
   'zen': {
@@ -1862,6 +1869,7 @@ const PSP_CONFIG = {
     ppEmailCol: 'Payer Email',
     ppCountryCol: 'Payer Country',
     ppNameCol: 'Payer Name',
+    tzOffset: 0,  // GMT+0
     ppBrandFilter: 'dl',
     ppTypeFilter: 'sale',
     ppBrandCol: 'Brand',
@@ -2195,7 +2203,42 @@ async function computeBP(cfg, bp, pspRows, bpRows) {
   } else {
     bpFiltered = bpRows.filter(r => (r['pspName'] || '').toLowerCase() === cfg.bpPspName.toLowerCase() && isFinal(r[bp.statusCol]));
   }
-  const pspRowsFiltered = pspRows.filter(r => !cfg.filterCol || (r[cfg.filterCol] || '') === cfg.filterVal).filter(r => isFinal(r[cfg.statusCol]));
+  const pspRowsRaw      = cfg.useWorkableStatus
+    ? pspRows.filter(r => ['Capture','Authorisation','3DSecure'].includes((r[cfg.filterCol] || '').trim()))
+    : pspRows;
+  const pspRowsFiltered = pspRowsRaw.filter(r => !cfg.filterCol || (r[cfg.filterCol] || '') === cfg.filterVal).filter(r => isFinal(r[cfg.statusCol]));
+
+  // For PSPs with useWorkableStatus (e.g. Payabl):
+  // Apply Workable Status per row, then:
+  // Approval Rate = Successful / (Successful + Unsuccessful) — In Progress excluded
+  let totalPSPForRate, pspApproved, pspApprovalRate;
+  if (cfg.useWorkableStatus) {
+    // Only work with Capture, Authorisation, 3DSecure rows — exclude Refund, Chargeback etc.
+    const VALID_TYPES = ['Capture', 'Authorisation', '3DSecure'];
+    const filteredPSP  = pspRows.filter(r => VALID_TYPES.includes((r[cfg.filterCol] || '').trim()));
+    const getWorkable = r => {
+      const tt = (r[cfg.filterCol] || '').trim();
+      const st = (r[cfg.statusCol] || '').trim();
+      if (tt === '3DSecure'      && st === 'Verified')   return 'In Progress';
+      if (tt === 'Authorisation' && st === 'Successful') return 'In Progress';
+      if (tt === 'Capture'       && st === 'Successful') return 'Successful';
+      return 'Unsuccessful';
+    };
+    const finalRows    = filteredPSP.filter(r => { const w = getWorkable(r); return w === 'Successful' || w === 'Unsuccessful'; });
+    pspApproved        = finalRows.filter(r => getWorkable(r) === 'Successful').length;
+    totalPSPForRate    = finalRows.length;
+    pspApprovalRate    = totalPSPForRate > 0 ? (pspApproved / totalPSPForRate * 100) : 0;
+  } else if (cfg.filterValAuth) {
+    const authRows   = pspRows.filter(r => (r[cfg.filterCol] || '') === cfg.filterValAuth);
+    const capSuccess = pspRowsFiltered.filter(r => normStatus(r[cfg.statusCol]) === 'approved').length;
+    totalPSPForRate  = authRows.length;
+    pspApproved      = capSuccess;
+    pspApprovalRate  = totalPSPForRate > 0 ? (pspApproved / totalPSPForRate * 100) : 0;
+  } else {
+    totalPSPForRate  = pspRowsFiltered.length;
+    pspApproved      = pspRowsFiltered.filter(r => normStatus(r[cfg.statusCol]) === 'approved').length;
+    pspApprovalRate  = totalPSPForRate > 0 ? (pspApproved / totalPSPForRate * 100) : 0;
+  }
   const pspMap = new Map();
   for (const row of pspRowsFiltered) { const id = (row[cfg.idCol] || '').trim(); if (id.startsWith('BP_')) { if (!pspMap.has(id)) pspMap.set(id, []); pspMap.get(id).push(row); } }
   const bpMap = new Map();
@@ -2207,27 +2250,25 @@ async function computeBP(cfg, bp, pspRows, bpRows) {
     for (const pspRow of pspList) {
       const pspStatus = (pspRow[cfg.statusCol] || '').toLowerCase();
       const pspAmount = parseFloat(pspRow[cfg.amountCol]) || 0;
-      if (!bpList || bpList.length === 0) { matched.push({ bpId, matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: pspRow[cfg.statusCol], bpAmount: 0, pspAmount, currency: pspRow[cfg.currencyCol], email: pspRow[cfg.emailCol], paymentMethod: pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: '', country: '', cardType: '', lastFour: '', bpDate: '', pspDate: String(pspRow[cfg.dateCol] || '').slice(0, 19) }); continue; }
+      if (!bpList || bpList.length === 0) { matched.push({ bpId, matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: pspRow[cfg.statusCol], bpAmount: 0, pspAmount, currency: pspRow[cfg.currencyCol], email: pspRow[cfg.emailCol], paymentMethod: pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: '', country: '', cardType: '', lastFour: '', bpDate: '', pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0) }); continue; }
       const bpRow = bpList[0];
       const bpStatus = (bpRow[bp.statusCol] || '').toLowerCase();
       const bpAmount = parseFloat(bpRow[bp.amountCol]) || 0;
       const statusMatch = normStatus(pspStatus) === normStatus(bpStatus);
       const amtMatch = Math.abs(pspAmount - bpAmount) < 0.01;
-      const record = { bpId, bpStatus: bpRow[bp.statusCol], pspStatus: pspRow[cfg.statusCol], bpAmount, pspAmount, currency: bpRow[bp.currencyCol] || pspRow[cfg.currencyCol], email: bpRow[bp.emailCol] || pspRow[cfg.emailCol], paymentMethod: bpRow[bp.methodCol] || pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: (bpRow[bp.dateCol] || '').slice(0, 19).replace('T', ' '), pspDate: String(pspRow[cfg.dateCol] || '').slice(0, 19) };
+      const record = { bpId, bpStatus: bpRow[bp.statusCol], pspStatus: pspRow[cfg.statusCol], bpAmount, pspAmount, currency: bpRow[bp.currencyCol] || pspRow[cfg.currencyCol], email: bpRow[bp.emailCol] || pspRow[cfg.emailCol], paymentMethod: bpRow[bp.methodCol] || pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0), pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0) };
       if (!statusMatch) statusMismatch.push({ ...record, matchType: 'STATUS_MISMATCH' });
       else if (!amtMatch) amountMismatch.push({ ...record, matchType: 'AMOUNT_MISMATCH' });
       else matched.push({ ...record, matchType: 'MATCHED' });
     }
   }
-  for (const [bpId, bpList] of bpMap.entries()) { if (!seenBPIds.has(bpId)) { for (const bpRow of bpList) { unmatchedBP.push({ bpId, matchType: 'BP_ONLY', bpStatus: bpRow[bp.statusCol], pspStatus: 'N/A', bpAmount: parseFloat(bpRow[bp.amountCol]) || 0, pspAmount: 0, currency: bpRow[bp.currencyCol], email: bpRow[bp.emailCol], paymentMethod: bpRow[bp.methodCol], pspTxId: '', bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: (bpRow[bp.dateCol] || '').slice(0, 19).replace('T', ' '), pspDate: '' }); } } }
+  for (const [bpId, bpList] of bpMap.entries()) { if (!seenBPIds.has(bpId)) { for (const bpRow of bpList) { unmatchedBP.push({ bpId, matchType: 'BP_ONLY', bpStatus: bpRow[bp.statusCol], pspStatus: 'N/A', bpAmount: parseFloat(bpRow[bp.amountCol]) || 0, pspAmount: 0, currency: bpRow[bp.currencyCol], email: bpRow[bp.emailCol], paymentMethod: bpRow[bp.methodCol], pspTxId: '', bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0), pspDate: '' }); } } }
   const cleanMatched = matched.filter(r => r.matchType === 'MATCHED');
   const unmatchedPSP = matched.filter(r => r.matchType === 'PSP_ONLY');
   const approvedRecords = cleanMatched.filter(r => normStatus(r.bpStatus) === 'approved');
   const totalApprovedRevenue = approvedRecords.reduce((s, r) => s + r.bpAmount, 0);
   const totalBPTx = bpFiltered.length, totalPSPTx = pspRowsFiltered.length;
   const approvalRate = totalBPTx > 0 ? (bpFiltered.filter(r => normStatus(r[bp.statusCol]) === 'approved').length / totalBPTx * 100) : 0;
-  const pspApproved = pspRowsFiltered.filter(r => normStatus(r[cfg.statusCol]) === 'approved').length;
-  const pspApprovalRate = totalPSPTx > 0 ? (pspApproved / totalPSPTx * 100) : 0;
   const matchRate = (pspMap.size + unmatchedBP.length) > 0 ? (cleanMatched.length / (pspMap.size + unmatchedBP.length) * 100) : 0;
   const countryRevMap = {};
   for (const r of approvedRecords) { if (r.country) countryRevMap[r.country] = (countryRevMap[r.country] || 0) + r.bpAmount; }
@@ -2252,12 +2293,12 @@ async function computeZen(cfg, zenRows, orderRows) {
     const zenList = zenMap.get(zpId); seenIds.add(zpId);
     for (const orderRow of orderList) {
       const orderAmount = parseFloat(orderRow[cfg.orderAmountCol]) || 0;
-      if (!zenList || zenList.length === 0) { unmatchedOrder.push({ bpId: zpId, matchType: 'BP_ONLY', bpStatus: orderRow[cfg.orderStatusCol], pspStatus: 'N/A', bpAmount: orderAmount, pspAmount: 0, currency: '', email: orderRow[cfg.orderEmailCol] || '', paymentMethod: '', pspTxId: '', bpTxId: zpId, country: '', cardType: '', lastFour: '', bpDate: (orderRow[cfg.orderDateCol] || '').slice(0, 19), pspDate: '' }); continue; }
+      if (!zenList || zenList.length === 0) { unmatchedOrder.push({ bpId: zpId, matchType: 'BP_ONLY', bpStatus: orderRow[cfg.orderStatusCol], pspStatus: 'N/A', bpAmount: orderAmount, pspAmount: 0, currency: '', email: orderRow[cfg.orderEmailCol] || '', paymentMethod: '', pspTxId: '', bpTxId: zpId, country: '', cardType: '', lastFour: '', bpDate: toGMT6(String(orderRow[cfg.orderDateCol] || ''), 0), pspDate: '' }); continue; }
       const zenRow = zenList[0];
       const zenStatus = zenRow[cfg.statusCol] || '';
       const zenAmount = parseFloat(zenRow[cfg.amountCol]) || 0;
       const amtMatch = Math.abs(zenAmount - orderAmount) < 0.01;
-      const record = { bpId: zpId, bpStatus: orderRow[cfg.orderStatusCol], pspStatus: zenStatus, bpAmount: orderAmount, pspAmount: zenAmount, currency: zenRow[cfg.currencyCol], email: orderRow[cfg.orderEmailCol] || '', paymentMethod: zenRow[cfg.methodCol], pspTxId: zenRow[cfg.txIdCol], bpTxId: zpId, country: zenRow['customer_country'] || '', cardType: zenRow['card_organisation'] || '', lastFour: (zenRow['card_short_pan'] || '').slice(-4), bpDate: (orderRow[cfg.orderDateCol] || '').slice(0, 19), pspDate: (zenRow[cfg.dateCol] || '').slice(0, 19).replace('T', ' ') };
+      const record = { bpId: zpId, bpStatus: orderRow[cfg.orderStatusCol], pspStatus: zenStatus, bpAmount: orderAmount, pspAmount: zenAmount, currency: zenRow[cfg.currencyCol], email: orderRow[cfg.orderEmailCol] || '', paymentMethod: zenRow[cfg.methodCol], pspTxId: zenRow[cfg.txIdCol], bpTxId: zpId, country: zenRow['customer_country'] || '', cardType: zenRow['card_organisation'] || '', lastFour: (zenRow['card_short_pan'] || '').slice(-4), bpDate: toGMT6(String(orderRow[cfg.orderDateCol] || ''), 0), pspDate: toGMT6(String(zenRow[cfg.dateCol] || ''), cfg.tzOffset || 0) };
       if (!amtMatch) amountMismatch.push({ ...record, matchType: 'AMOUNT_MISMATCH' });
       else matched.push({ ...record, matchType: 'MATCHED' });
     }
@@ -2265,7 +2306,7 @@ async function computeZen(cfg, zenRows, orderRows) {
   for (const [zpId, zenList] of zenMap.entries()) {
     if (!seenIds.has(zpId)) {
       for (const zenRow of zenList) {
-        if (normStatus(zenRow[cfg.statusCol]) === 'approved') unmatchedPSP.push({ bpId: zpId, matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: zenRow[cfg.statusCol], bpAmount: 0, pspAmount: parseFloat(zenRow[cfg.amountCol]) || 0, currency: zenRow[cfg.currencyCol], email: '', paymentMethod: zenRow[cfg.methodCol], pspTxId: zenRow[cfg.txIdCol], bpTxId: '', country: zenRow['customer_country'] || '', cardType: zenRow['card_organisation'] || '', lastFour: (zenRow['card_short_pan'] || '').slice(-4), bpDate: '', pspDate: (zenRow[cfg.dateCol] || '').slice(0, 19).replace('T', ' ') });
+        if (normStatus(zenRow[cfg.statusCol]) === 'approved') unmatchedPSP.push({ bpId: zpId, matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: zenRow[cfg.statusCol], bpAmount: 0, pspAmount: parseFloat(zenRow[cfg.amountCol]) || 0, currency: zenRow[cfg.currencyCol], email: '', paymentMethod: zenRow[cfg.methodCol], pspTxId: zenRow[cfg.txIdCol], bpTxId: '', country: zenRow['customer_country'] || '', cardType: zenRow['card_organisation'] || '', lastFour: (zenRow['card_short_pan'] || '').slice(-4), bpDate: '', pspDate: toGMT6(String(zenRow[cfg.dateCol] || ''), cfg.tzOffset || 0) });
       }
     }
   }
@@ -2315,7 +2356,7 @@ async function computeDLocal(cfg, dlRows, ppRows) {
       const dlCountry = getCol(dlRow, cfg.countryCol) || '';
       const dlCardBrand = getCol(dlRow, cfg.cardBrandCol) || '';
       const dlLastFour = (getCol(dlRow, cfg.cardLastFourCol) || '').toString().slice(-4);
-      const dlDate = String(getCol(dlRow, cfg.dateCol) || '').slice(0, 19);
+      const dlDate = toGMT6(String(getCol(dlRow, cfg.dateCol) || ''), cfg.tzOffset || 0);
 
       if (!ppRow) { matched.push({ bpId: invId, matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: dlStatus, bpAmount: 0, pspAmount: dlBalAmt, currency: dlCurrency, email: dlEmail, paymentMethod: dlMethod, pspTxId: dlTxId, bpTxId: '', country: dlCountry, cardType: dlCardBrand, lastFour: dlLastFour, bpDate: '', pspDate: dlDate }); continue; }
 
@@ -2376,7 +2417,7 @@ async function computePaysafe(cfg, psRows, bpRows, ppRows) {
       const bpAmt = parseFloat(bpRow[cfg.bpAmountCol]) || 0;
       const statusOk = normStatus(bpStatus) === 'approved';
       const amtOk = Math.abs(psAmt - bpAmt) < 0.01;
-      const record = { bpId: psId, via: 'BridgerPay', bpStatus, pspStatus: 'Settlement', bpAmount: bpAmt, pspAmount: psAmt, currency: psCurrency, email: bpRow[cfg.bpEmailCol] || '', paymentMethod: bpRow[cfg.bpMethodCol] || '', pspTxId: psRow[cfg.txIdCol] || '', bpTxId: bpRow[cfg.bpIdCol] || '', country: bpRow[cfg.bpCountryCol] || psRow[cfg.countryCol] || '', cardType: bpRow[cfg.bpCardTypeCol] || '', lastFour: (bpRow[cfg.bpLastFourCol] || '').toString().slice(-4), bpDate: (bpRow[cfg.bpDateCol] || '').toString().slice(0, 19), pspDate: (psRow[cfg.dateCol] || '').toString().slice(0, 10) };
+      const record = { bpId: psId, via: 'BridgerPay', bpStatus, pspStatus: 'Settlement', bpAmount: bpAmt, pspAmount: psAmt, currency: psCurrency, email: bpRow[cfg.bpEmailCol] || '', paymentMethod: bpRow[cfg.bpMethodCol] || '', pspTxId: psRow[cfg.txIdCol] || '', bpTxId: bpRow[cfg.bpIdCol] || '', country: bpRow[cfg.bpCountryCol] || psRow[cfg.countryCol] || '', cardType: bpRow[cfg.bpCardTypeCol] || '', lastFour: (bpRow[cfg.bpLastFourCol] || '').toString().slice(-4), bpDate: toGMT6(String(bpRow[cfg.bpDateCol] || ''), 0), pspDate: toGMT6(String(psRow[cfg.dateCol] || ''), cfg.tzOffset || 0) };
       if (!statusOk) statusMismatch.push({ ...record, matchType: 'STATUS_MISMATCH' });
       else if (!amtOk) amountMismatch.push({ ...record, matchType: 'AMOUNT_MISMATCH' });
       else matched.push({ ...record, matchType: 'MATCHED' });
@@ -2385,18 +2426,18 @@ async function computePaysafe(cfg, psRows, bpRows, ppRows) {
       const ppAmt = parseFloat(ppRow[cfg.ppAmountCol]) || 0;
       const statusOk = normStatus(ppStatus) === 'approved';
       const amtOk = Math.abs(psAmt - ppAmt) < 0.01;
-      const record = { bpId: psId, via: 'PayProcc', bpStatus: ppStatus, pspStatus: 'Settlement', bpAmount: ppAmt, pspAmount: psAmt, currency: psCurrency, email: ppRow[cfg.ppEmailCol] || '', paymentMethod: psRow[cfg.methodCol] || '', pspTxId: psRow[cfg.txIdCol] || '', bpTxId: ppRow[cfg.ppTxIdCol] || '', country: ppRow[cfg.ppCountryCol] || psRow[cfg.countryCol] || '', cardType: (ppRow[cfg.ppBrandCol] || '').toUpperCase(), lastFour: '', bpDate: (ppRow[cfg.ppDateCol] || '').toString().slice(0, 10), pspDate: (psRow[cfg.dateCol] || '').toString().slice(0, 10) };
+      const record = { bpId: psId, via: 'PayProcc', bpStatus: ppStatus, pspStatus: 'Settlement', bpAmount: ppAmt, pspAmount: psAmt, currency: psCurrency, email: ppRow[cfg.ppEmailCol] || '', paymentMethod: psRow[cfg.methodCol] || '', pspTxId: psRow[cfg.txIdCol] || '', bpTxId: ppRow[cfg.ppTxIdCol] || '', country: ppRow[cfg.ppCountryCol] || psRow[cfg.countryCol] || '', cardType: (ppRow[cfg.ppBrandCol] || '').toUpperCase(), lastFour: '', bpDate: toGMT6(String(ppRow[cfg.ppDateCol] || ''), 0), pspDate: toGMT6(String(psRow[cfg.dateCol] || ''), cfg.tzOffset || 0) };
       if (!statusOk) statusMismatch.push({ ...record, matchType: 'STATUS_MISMATCH' });
       else if (!amtOk) amountMismatch.push({ ...record, matchType: 'AMOUNT_MISMATCH' });
       else matched.push({ ...record, matchType: 'MATCHED' });
     } else {
-      psOnly.push({ bpId: psId, via: '—', matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: 'Settlement', bpAmount: 0, pspAmount: psAmt, currency: psCurrency, email: '', paymentMethod: psRow[cfg.methodCol] || '', pspTxId: psRow[cfg.txIdCol] || '', bpTxId: '', country: psRow[cfg.countryCol] || '', cardType: '', lastFour: '', bpDate: '', pspDate: (psRow[cfg.dateCol] || '').toString().slice(0, 10) });
+      psOnly.push({ bpId: psId, via: '—', matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: 'Settlement', bpAmount: 0, pspAmount: psAmt, currency: psCurrency, email: '', paymentMethod: psRow[cfg.methodCol] || '', pspTxId: psRow[cfg.txIdCol] || '', bpTxId: '', country: psRow[cfg.countryCol] || '', cardType: '', lastFour: '', bpDate: '', pspDate: toGMT6(String(psRow[cfg.dateCol] || ''), cfg.tzOffset || 0) });
     }
   }
 
   const unmatchedBP = [];
-  for (const [id, bpRow] of bpMap.entries()) { if (!seenIds.has(id)) unmatchedBP.push({ bpId: id, via: 'BridgerPay', matchType: 'BP_ONLY', bpStatus: bpRow[cfg.bpStatusCol], pspStatus: 'N/A', bpAmount: parseFloat(bpRow[cfg.bpAmountCol]) || 0, pspAmount: 0, currency: bpRow[cfg.bpCurrencyCol] || '', email: bpRow[cfg.bpEmailCol] || '', paymentMethod: bpRow[cfg.bpMethodCol] || '', pspTxId: '', bpTxId: bpRow[cfg.bpIdCol] || '', country: bpRow[cfg.bpCountryCol] || '', cardType: bpRow[cfg.bpCardTypeCol] || '', lastFour: (bpRow[cfg.bpLastFourCol] || '').toString().slice(-4), bpDate: (bpRow[cfg.bpDateCol] || '').toString().slice(0, 19), pspDate: '' }); }
-  for (const [id, ppRow] of ppMap.entries()) { if (!seenIds.has(id)) unmatchedBP.push({ bpId: id, via: 'PayProcc', matchType: 'BP_ONLY', bpStatus: ppRow[cfg.ppStatusCol], pspStatus: 'N/A', bpAmount: parseFloat(ppRow[cfg.ppAmountCol]) || 0, pspAmount: 0, currency: ppRow[cfg.ppCurrencyCol] || '', email: ppRow[cfg.ppEmailCol] || '', paymentMethod: '', pspTxId: '', bpTxId: ppRow[cfg.ppTxIdCol] || '', country: ppRow[cfg.ppCountryCol] || '', cardType: (ppRow[cfg.ppBrandCol] || '').toUpperCase(), lastFour: '', bpDate: (ppRow[cfg.ppDateCol] || '').toString().slice(0, 10), pspDate: '' }); }
+  for (const [id, bpRow] of bpMap.entries()) { if (!seenIds.has(id)) unmatchedBP.push({ bpId: id, via: 'BridgerPay', matchType: 'BP_ONLY', bpStatus: bpRow[cfg.bpStatusCol], pspStatus: 'N/A', bpAmount: parseFloat(bpRow[cfg.bpAmountCol]) || 0, pspAmount: 0, currency: bpRow[cfg.bpCurrencyCol] || '', email: bpRow[cfg.bpEmailCol] || '', paymentMethod: bpRow[cfg.bpMethodCol] || '', pspTxId: '', bpTxId: bpRow[cfg.bpIdCol] || '', country: bpRow[cfg.bpCountryCol] || '', cardType: bpRow[cfg.bpCardTypeCol] || '', lastFour: (bpRow[cfg.bpLastFourCol] || '').toString().slice(-4), bpDate: toGMT6(String(bpRow[cfg.bpDateCol] || ''), 0), pspDate: '' }); }
+  for (const [id, ppRow] of ppMap.entries()) { if (!seenIds.has(id)) unmatchedBP.push({ bpId: id, via: 'PayProcc', matchType: 'BP_ONLY', bpStatus: ppRow[cfg.ppStatusCol], pspStatus: 'N/A', bpAmount: parseFloat(ppRow[cfg.ppAmountCol]) || 0, pspAmount: 0, currency: ppRow[cfg.ppCurrencyCol] || '', email: ppRow[cfg.ppEmailCol] || '', paymentMethod: '', pspTxId: '', bpTxId: ppRow[cfg.ppTxIdCol] || '', country: ppRow[cfg.ppCountryCol] || '', cardType: (ppRow[cfg.ppBrandCol] || '').toUpperCase(), lastFour: '', bpDate: toGMT6(String(ppRow[cfg.ppDateCol] || ''), 0), pspDate: '' }); }
 
   const bpApproved = bpFiltered.filter(r => normStatus(r[cfg.bpStatusCol]) === 'approved').length;
   const ppApproved = ppFiltered.filter(r => normStatus(r[cfg.ppStatusCol]) === 'approved').length;
@@ -2408,7 +2449,34 @@ async function computePaysafe(cfg, psRows, bpRows, ppRows) {
   for (const r of matched) { if (r.country) countryRevMap[r.country] = (countryRevMap[r.country] || 0) + r.pspAmount; }
   const topCountries = Object.entries(countryRevMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
-  return { matched, unmatchedBP, unmatchedPSP: psOnly, statusMismatch, amountMismatch, totalBPTx: totalOrchTx, totalPSPTx: psFiltered.length, pspTxCount: psFiltered.length, secondTxCount: totalOrchTx, approvalRate, pspApprovalRate: 100, matchRate, totalApprovedRevenue, topCountries, secondLabel: 'BP + PayProcc', isPaysafe: true, bpMatchCount: matched.filter(r => r.via === 'BridgerPay').length, ppMatchCount: matched.filter(r => r.via === 'PayProcc').length };
+  // Paysafe Approval Rate — group by Merchant Transaction ID
+  // Successful: has Payment Handle + Settlement + authorization, all Completed (authorization may be Processing)
+  // Unsuccessful: only Payment Handle with status Processing/Initiated/Payable
+  // Exclude: Dispute, Refund, and Payment Handle Completed with no downstream (in-flight)
+  const psWorkingRows = psRows.filter(r => ['Payment Handle','Settlement','authorization'].includes((r[cfg.filterCol2 || 'Transaction Type'] || r['Transaction Type'] || '')));
+  const psMidGroups = {};
+  psWorkingRows.forEach(r => {
+    const mid = (r[cfg.idCol] || '').toString().trim();
+    if (!mid) return;
+    if (!psMidGroups[mid]) psMidGroups[mid] = [];
+    psMidGroups[mid].push(r);
+  });
+  let psSuccessCount = 0, psFailCount = 0;
+  Object.values(psMidGroups).forEach(group => {
+    const types = new Set(group.map(r => (r['Transaction Type'] || '').trim()));
+    if (types.has('Payment Handle') && types.has('Settlement') && types.has('authorization')) {
+      const authRows = group.filter(r => r['Transaction Type'] === 'authorization');
+      if (authRows.every(r => (r['Status'] || '').trim() === 'Completed')) psSuccessCount++;
+      else psFailCount++; // authorization in Processing
+    } else if (types.size === 1 && types.has('Payment Handle')) {
+      const phStatus = group[0]['Status'] || '';
+      if (['Processing','Initiated','Payable'].includes(phStatus.trim())) psFailCount++;
+    }
+  });
+  const psTotalFinal = psSuccessCount + psFailCount;
+  const pspApprovalRate = psTotalFinal > 0 ? (psSuccessCount / psTotalFinal * 100) : 0;
+
+  return { matched, unmatchedBP, unmatchedPSP: psOnly, statusMismatch, amountMismatch, totalBPTx: totalOrchTx, totalPSPTx: psFiltered.length, pspTxCount: psFiltered.length, secondTxCount: totalOrchTx, approvalRate, pspApprovalRate, matchRate, totalApprovedRevenue, topCountries, secondLabel: 'BP + PayProcc', isPaysafe: true, bpMatchCount: matched.filter(r => r.via === 'BridgerPay').length, ppMatchCount: matched.filter(r => r.via === 'PayProcc').length };
 }
 
 // ====================== MULTI RESULTS RENDER ======================
@@ -3186,8 +3254,8 @@ async function runPaysafeReconciliation(cfg, psRows, bpRows, ppRows) {
         country: bpRow[cfg.bpCountryCol] || psRow[cfg.countryCol] || '',
         cardType: bpRow[cfg.bpCardTypeCol] || '',
         lastFour: (bpRow[cfg.bpLastFourCol] || '').toString().slice(-4),
-        bpDate: (bpRow[cfg.bpDateCol] || '').toString().slice(0, 19),
-        pspDate: (psRow[cfg.dateCol] || '').toString().slice(0, 10)
+        bpDate: toGMT6(String(bpRow[cfg.bpDateCol] || ''), 0),
+        pspDate: toGMT6(String(psRow[cfg.dateCol] || ''), cfg.tzOffset || 0)
       };
 
       if (!statusOk) statusMismatch.push({ ...record, matchType: 'STATUS_MISMATCH' });
@@ -3210,8 +3278,8 @@ async function runPaysafeReconciliation(cfg, psRows, bpRows, ppRows) {
         pspTxId: psRow[cfg.txIdCol] || '', bpTxId: ppRow[cfg.ppTxIdCol] || '',
         country: ppRow[cfg.ppCountryCol] || psRow[cfg.countryCol] || '',
         cardType: (ppRow[cfg.ppBrandCol] || '').toUpperCase(),
-        lastFour: '', bpDate: (ppRow[cfg.ppDateCol] || '').toString().slice(0, 10),
-        pspDate: (psRow[cfg.dateCol] || '').toString().slice(0, 10)
+        lastFour: '', bpDate: toGMT6(String(ppRow[cfg.ppDateCol] || ''), 0),
+        pspDate: toGMT6(String(psRow[cfg.dateCol] || ''), cfg.tzOffset || 0)
       };
 
       if (!statusOk) statusMismatch.push({ ...record, matchType: 'STATUS_MISMATCH' });
@@ -3226,7 +3294,7 @@ async function runPaysafeReconciliation(cfg, psRows, bpRows, ppRows) {
         email: '', paymentMethod: psRow[cfg.methodCol] || '',
         pspTxId: psRow[cfg.txIdCol] || '', bpTxId: '',
         country: psRow[cfg.countryCol] || '', cardType: '', lastFour: '',
-        bpDate: '', pspDate: (psRow[cfg.dateCol] || '').toString().slice(0, 10)
+        bpDate: '', pspDate: toGMT6(String(psRow[cfg.dateCol] || ''), cfg.tzOffset || 0)
       });
     }
   }
@@ -3247,7 +3315,7 @@ async function runPaysafeReconciliation(cfg, psRows, bpRows, ppRows) {
         pspTxId: '', bpTxId: bpRow[cfg.bpIdCol] || '',
         country: bpRow[cfg.bpCountryCol] || '', cardType: bpRow[cfg.bpCardTypeCol] || '',
         lastFour: (bpRow[cfg.bpLastFourCol] || '').toString().slice(-4),
-        bpDate: (bpRow[cfg.bpDateCol] || '').toString().slice(0, 19), pspDate: ''
+        bpDate: toGMT6(String(bpRow[cfg.bpDateCol] || ''), 0), pspDate: ''
       });
     }
   }
@@ -3264,7 +3332,7 @@ async function runPaysafeReconciliation(cfg, psRows, bpRows, ppRows) {
         email: ppRow[cfg.ppEmailCol] || '', paymentMethod: '',
         pspTxId: '', bpTxId: ppRow[cfg.ppTxIdCol] || '',
         country: ppRow[cfg.ppCountryCol] || '', cardType: (ppRow[cfg.ppBrandCol] || '').toUpperCase(),
-        lastFour: '', bpDate: (ppRow[cfg.ppDateCol] || '').toString().slice(0, 10), pspDate: ''
+        lastFour: '', bpDate: toGMT6(String(ppRow[cfg.ppDateCol] || ''), 0), pspDate: ''
       });
     }
   }
@@ -3286,7 +3354,29 @@ async function runPaysafeReconciliation(cfg, psRows, bpRows, ppRows) {
   const bpApproved = bpFiltered.filter(r => normStatus(r[cfg.bpStatusCol]) === 'approved').length;
   const ppApproved = ppFiltered.filter(r => normStatus(r[cfg.ppStatusCol]) === 'approved').length;
   const approvalRate = totalBPTx > 0 ? ((bpApproved + ppApproved) / totalBPTx * 100) : 0;
-  const pspApprovalRate = 100; // all PS settlements are Completed by definition
+  // Paysafe Approval Rate — same logic as computePaysafe
+  const psWorkingRows2 = psRows.filter(r => ['Payment Handle','Settlement','authorization'].includes((r['Transaction Type'] || '').trim()));
+  const psMidGroups2 = {};
+  psWorkingRows2.forEach(r => {
+    const mid = (r[cfg.idCol] || '').toString().trim();
+    if (!mid) return;
+    if (!psMidGroups2[mid]) psMidGroups2[mid] = [];
+    psMidGroups2[mid].push(r);
+  });
+  let psSuccessCount2 = 0, psFailCount2 = 0;
+  Object.values(psMidGroups2).forEach(group => {
+    const types = new Set(group.map(r => (r['Transaction Type'] || '').trim()));
+    if (types.has('Payment Handle') && types.has('Settlement') && types.has('authorization')) {
+      const authRows = group.filter(r => r['Transaction Type'] === 'authorization');
+      if (authRows.every(r => (r['Status'] || '').trim() === 'Completed')) psSuccessCount2++;
+      else psFailCount2++;
+    } else if (types.size === 1 && types.has('Payment Handle')) {
+      const phStatus = (group[0]['Status'] || '').trim();
+      if (['Processing','Initiated','Payable'].includes(phStatus)) psFailCount2++;
+    }
+  });
+  const psTotalFinal2 = psSuccessCount2 + psFailCount2;
+  const pspApprovalRate = psTotalFinal2 > 0 ? (psSuccessCount2 / psTotalFinal2 * 100) : 0;
   const matchRate = totalPSPTx > 0 ? (cleanMatched.length / totalPSPTx * 100) : 0;
 
   // Top countries from PS report
@@ -3380,7 +3470,7 @@ async function runZenReconciliation(cfg, zenRows, orderRows) {
           currency: '', email: orderRow[cfg.orderEmailCol] || '',
           paymentMethod: '', pspTxId: '', bpTxId: zpId,
           country: '', cardType: '', lastFour: '',
-          bpDate: (orderRow[cfg.orderDateCol] || '').slice(0, 19), pspDate: ''
+          bpDate: toGMT6(String(orderRow[cfg.orderDateCol] || ''), 0), pspDate: ''
         });
         continue;
       }
@@ -3402,8 +3492,8 @@ async function runZenReconciliation(cfg, zenRows, orderRows) {
         country: zenRow['customer_country'] || '',
         cardType: zenRow['card_organisation'] || '',
         lastFour: (zenRow['card_short_pan'] || '').slice(-4),
-        bpDate: (orderRow[cfg.orderDateCol] || '').slice(0, 19),
-        pspDate: (zenRow[cfg.dateCol] || '').slice(0, 19).replace('T', ' ')
+        bpDate: toGMT6(String(orderRow[cfg.orderDateCol] || ''), 0),
+        pspDate: toGMT6(String(zenRow[cfg.dateCol] || ''), cfg.tzOffset || 0)
       };
 
       if (!amtMatch) {
@@ -3435,7 +3525,7 @@ async function runZenReconciliation(cfg, zenRows, orderRows) {
             country: zenRow['customer_country'] || '',
             cardType: zenRow['card_organisation'] || '',
             lastFour: (zenRow['card_short_pan'] || '').slice(-4),
-            bpDate: '', pspDate: (zenRow[cfg.dateCol] || '').slice(0, 19).replace('T', ' ')
+            bpDate: '', pspDate: toGMT6(String(zenRow[cfg.dateCol] || ''), cfg.tzOffset || 0)
           });
         }
       }
@@ -3549,7 +3639,7 @@ async function runDLocalReconciliation(cfg, dlRows, ppRows) {
       const dlCountry = getCol(dlRow, cfg.countryCol) || '';
       const dlCardBrand = getCol(dlRow, cfg.cardBrandCol) || '';
       const dlLastFour = (getCol(dlRow, cfg.cardLastFourCol) || '').toString().slice(-4);
-      const dlDate = String(getCol(dlRow, cfg.dateCol) || '').slice(0, 19);
+      const dlDate = toGMT6(String(getCol(dlRow, cfg.dateCol) || ''), cfg.tzOffset || 0);
 
       if (!ppRow) {
         matched.push({
@@ -3762,8 +3852,8 @@ async function runBPReconciliation(cfg, pspRows, bpRows) {
         country: bpRow[bp.countryCol] || '',
         cardType: bpRow[bp.cardTypeCol] || '',
         lastFour: bpRow[bp.lastFourCol] || '',
-        bpDate: (bpRow[bp.dateCol] || '').slice(0, 19).replace('T', ' '),
-        pspDate: String(pspRow[cfg.dateCol] || '').slice(0, 19)
+        bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0),
+        pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0)
       };
 
       if (!statusMatch) {
@@ -3794,7 +3884,7 @@ async function runBPReconciliation(cfg, pspRows, bpRows) {
           country: bpRow[bp.countryCol] || '',
           cardType: bpRow[bp.cardTypeCol] || '',
           lastFour: bpRow[bp.lastFourCol] || '',
-          bpDate: (bpRow[bp.dateCol] || '').slice(0, 19).replace('T', ' '),
+          bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0),
           pspDate: ''
         });
       }
@@ -5686,11 +5776,29 @@ function payablHandleFile(type, file) {
 function parseDate(s) {
   if (!s) return null;
   const str = String(s).trim();
-  // DD.MM.YYYY
+  // DD.MM.YYYY — date only, no conversion needed
   const dmy = str.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
   if (dmy) return new Date(dmy[3], dmy[2]-1, dmy[1]);
   const d = new Date(str);
   return isNaN(d) ? null : d;
+}
+
+// Convert a datetime string from a source timezone to GMT+6 (Bangladesh Standard Time)
+// offsetHours = source UTC offset (e.g. 0 for UTC, 4 for Dubai/UTC+4)
+// Returns a formatted string "YYYY-MM-DD HH:MM:SS"
+function toGMT6(dateStr, offsetHours) {
+  if (!dateStr) return '';
+  const str = String(dateStr).trim();
+  if (!str || str === 'undefined' || str === 'null') return '';
+  // If date-only (no time component), skip conversion
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str) || /^\d{2}\.\d{2}\.\d{4}$/.test(str)) return str.slice(0,10);
+  const d = new Date(str.replace(' ', 'T') + (str.includes('+') || str.includes('Z') ? '' : 'Z'));
+  if (isNaN(d)) return str.slice(0,19);
+  // Add source offset inverse + GMT+6 = net shift of (6 - offsetHours) hours
+  const shiftMs = (6 - offsetHours) * 3600000;
+  const shifted = new Date(d.getTime() + shiftMs);
+  const pad = n => String(n).padStart(2,'0');
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth()+1)}-${pad(shifted.getUTCDate())} ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
 }
 
 function getMonth(d) {
@@ -5779,15 +5887,24 @@ function payablAnalyse(txRows, breakRows) {
     cbByMonth[m].amount += Math.abs(n(r['Trans Amount']));
   });
 
-  // Step 7 — Auth rates
-  const auths = txRows.filter(r => (r['Tx-Type'] || '').trim() === 'Authorisation');
-  const authSuccess = auths.filter(r => (r['Status'] || '') === 'Successful').length;
+  // Step 7 — Auth approval rate
+  // Approval = Successful Captures / Total Authorisations
+  // (every capture was preceded by an auth, so this is the true auth→capture conversion rate)
+  const auths       = txRows.filter(r => (r['Tx-Type'] || '').trim() === 'Authorisation');
+  const authFailed  = auths.filter(r => (r['Status'] || '') === 'Failed').length;
+  // Successful captures = approved transactions
+  const authSuccess = captures.length; // captures already filtered to Successful
   const authByMonth = {};
+  // Build monthly from both Authorisation and Capture rows
   auths.forEach(r => {
     const m = getMonth(r._date);
     if (!authByMonth[m]) authByMonth[m] = { total:0, success:0 };
     authByMonth[m].total++;
-    if ((r['Status']||'') === 'Successful') authByMonth[m].success++;
+  });
+  captures.forEach(r => {
+    const m = getMonth(r._date);
+    if (!authByMonth[m]) authByMonth[m] = { total:0, success:0 };
+    authByMonth[m].success++;
   });
 
   // Step 8 — 3DS
@@ -5830,7 +5947,7 @@ function payablAnalyse(txRows, breakRows) {
   return {
     captures, grossTotal, netTotal, totalFees, fees,
     capByMonth, feeByMonth, refByMonth, cbByMonth,
-    authTotal: auths.length, authSuccess,
+    authTotal: auths.length, authSuccess, authFailed,
     authRate: auths.length ? authSuccess/auths.length*100 : 0,
     authByMonth,
     tdsTotal: tds.length, tdsVerified,
@@ -5852,8 +5969,6 @@ function payablRenderResults(d) {
     <div class="stat-card green"><div class="stat-label">Gross Revenue</div><div class="stat-value" style="color:var(--accent);font-size:20px">${fmt(d.grossTotal)}</div><div class="stat-sub">${d.captures.length.toLocaleString()} successful captures</div></div>
     <div class="stat-card green"><div class="stat-label">Net Settlement</div><div class="stat-value" style="color:var(--green);font-size:20px">${fmt(d.netTotal)}</div><div class="stat-sub">After all fees deducted</div></div>
     <div class="stat-card red"><div class="stat-label">Total Fees</div><div class="stat-value" style="color:var(--red);font-size:20px">${fmt(Math.abs(d.totalFees))}</div><div class="stat-sub">${pct(Math.abs(d.totalFees)/d.grossTotal*100)} effective rate</div></div>
-    <div class="stat-card"><div class="stat-label">Auth Approval Rate</div><div class="stat-value" style="color:var(--accent)">${pct(d.authRate)}</div><div class="stat-sub">${d.authSuccess.toLocaleString()} of ${d.authTotal.toLocaleString()}</div></div>
-    <div class="stat-card green"><div class="stat-label">3DS Verified Rate</div><div class="stat-value" style="color:var(--green)">${pct(d.tdsRate)}</div><div class="stat-sub">${d.tdsVerified.toLocaleString()} of ${d.tdsTotal.toLocaleString()}</div></div>
     <div class="stat-card yellow"><div class="stat-label">Refunds</div><div class="stat-value" style="color:var(--yellow)">${fmt(d.refTotal)}</div><div class="stat-sub">${d.refCount} transactions</div></div>
     <div class="stat-card red"><div class="stat-label">Chargebacks</div><div class="stat-value" style="color:var(--red)">${fmt(d.cbTotal)}</div><div class="stat-sub">${d.cbCount} transactions</div></div>
     <div class="stat-card red"><div class="stat-label">CB Rate</div><div class="stat-value" style="color:var(--red)">${pct(d.cbCount/d.captures.length*100)}</div><div class="stat-sub">Of total captures</div></div>
@@ -5901,9 +6016,10 @@ function payablRenderResults(d) {
 
   // Auth & 3DS tab
   document.getElementById('payablTabAuth').innerHTML = `
-    <div class="section-title" style="margin-bottom:12px">Monthly Authorisation Rate</div>
+    <div class="section-title" style="margin-bottom:12px">Monthly Authorisation → Capture Rate</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:12px">Approval Rate = Successful Captures ÷ Total Authorisations</div>
     <div class="table-wrap" style="margin-bottom:20px"><table>
-      <thead><tr><th>Month</th><th style="text-align:right">Total Auths</th><th style="text-align:right">Successful</th><th style="text-align:right">Failed</th><th style="text-align:right">Approval Rate</th></tr></thead>
+      <thead><tr><th>Month</th><th style="text-align:right">Total Auths</th><th style="text-align:right">Captured</th><th style="text-align:right">Auth Failed</th><th style="text-align:right">Approval Rate</th></tr></thead>
       <tbody>${Object.entries(d.authByMonth).sort().map(([m,v]) => `
         <tr><td style="font-weight:700">${m}</td>
           <td style="text-align:right">${v.total.toLocaleString()}</td>
@@ -5914,7 +6030,7 @@ function payablRenderResults(d) {
       <tr style="background:var(--surface2);font-weight:700;border-top:2px solid var(--border)">
         <td>TOTAL</td><td style="text-align:right">${d.authTotal.toLocaleString()}</td>
         <td style="text-align:right;color:var(--green)">${d.authSuccess.toLocaleString()}</td>
-        <td style="text-align:right;color:var(--red)">${(d.authTotal-d.authSuccess).toLocaleString()}</td>
+        <td style="text-align:right;color:var(--red)">${d.authFailed.toLocaleString()}</td>
         <td style="text-align:right;color:var(--accent);font-weight:700">${pct(d.authRate)}</td>
       </tr></tbody>
     </table></div>
