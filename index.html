@@ -2120,76 +2120,113 @@ async function runMultiReconciliation() {
     </div>
   `).join('');
 
-  // Parse all files first (main thread — needs DOM/XLSX/PapaParse)
-  const parsedFiles = {};
-  // Add a reading status row to the progress list
+  // ── STEP 1: Read shared files first (BP, PP, Order List) ──
+  const sharedFiles = {};
   document.getElementById('multiProgressList').insertAdjacentHTML('beforeend',
     `<div style="font-size:11px;color:var(--text3);padding:8px 0 4px 0;font-style:italic" id="fileReadStatus">Preparing files...</div>`);
-  for (const item of state.multiFileQueue) {
+
+  const sharedItems = state.multiFileQueue.filter(item => !item.fileKey.startsWith('psp_'));
+  for (const item of sharedItems) {
     const statusEl = document.getElementById('fileReadStatus');
-    if (statusEl) statusEl.textContent = `Reading ${item.label}... (large files may take 10–20s)`;
+    if (statusEl) statusEl.textContent = `Reading ${item.label}...`;
     await yieldToUI();
+    await new Promise(r => setTimeout(r, 200));
     const file = state.multiFiles[item.fileKey];
     try {
-      parsedFiles[item.fileKey] = await parseFile(file, item.fileKey);
+      sharedFiles[item.fileKey] = await parseFile(file, item.fileKey);
     } catch(err) {
-      toast('Error reading ' + item.label + ': ' + err.message);
+      toast('Error reading ' + item.label + ': ' + (err?.message || String(err) || 'Unknown error'));
       return;
     }
     await yieldToUI();
   }
-  const parseEl = document.getElementById('fileReadStatus');
-  if (parseEl) parseEl.textContent = 'All files read. Running reconciliations...';
 
-  // Set all to "Queued"
-  psps.forEach(psp => {
-    const s = document.getElementById('mps_' + psp);
-    if (s) s.textContent = 'Queued...';
-  });
+  // ── STEP 2: For each PSP — read its file, run reconciliation, then free memory ──
+  state.multiResults = {};
+  const pspItems = state.multiFileQueue.filter(item => item.fileKey.startsWith('psp_'));
 
-  // Build jobs for worker
-  const jobs = psps.map(psp => {
+  for (const psp of psps) {
     const cfg = PSP_CONFIG[psp];
-    const pspRows = parsedFiles['psp_' + psp] || [];
-    const bpRows  = parsedFiles['shared_bp'] || [];
-    const ppRows  = parsedFiles['shared_pp'] || [];
-    const olRows  = parsedFiles['shared_ol'] || [];
-    if (cfg.useTripleFile) return { psp, cfg, engine: 'ps', pspRows, bpRows, ppRows };
-    if (cfg.useOrderList)  return { psp, cfg, engine: 'zen', pspRows, secondRows: olRows };
-    if (cfg.usePayProcc)   return { psp, cfg, engine: 'dl',  pspRows, secondRows: ppRows };
-    return                        { psp, cfg, engine: 'bp',  pspRows, bpRows };
-  });
+    const statusEl = document.getElementById('mps_' + psp);
+    const barEl    = document.getElementById('mpb_' + psp);
+    const fileEl   = document.getElementById('fileReadStatus');
 
-  // Set all running
-  psps.forEach(psp => {
-    const s = document.getElementById('mps_' + psp);
-    if (s) s.textContent = 'Running...';
-  });
+    if (statusEl) statusEl.textContent = 'Reading...';
+    if (barEl) barEl.style.width = '20%';
+    if (fileEl) fileEl.textContent = `Reading ${cfg.name} report...`;
+    await yieldToUI();
+    await new Promise(r => setTimeout(r, 200));
 
-  try {
-    const results = await runInWorker(jobs);
-    state.multiResults = {};
-    for (const psp of psps) {
-      if (results[psp]) {
-        state.multiResults[psp] = results[psp];
-        const s = document.getElementById('mps_' + psp);
-        if (s) { s.textContent = '✅ Done'; s.style.color = 'var(--green)'; }
-      } else {
-        const s = document.getElementById('mps_' + psp);
-        if (s) { s.textContent = '❌ Failed'; s.style.color = 'var(--red)'; }
+    // Read this PSP's file
+    let pspRows = [];
+    const pspItem = pspItems.find(item => item.fileKey === 'psp_' + psp);
+    if (pspItem) {
+      const file = state.multiFiles[pspItem.fileKey];
+      try {
+        const sheetName = cfg.sheetName || null;
+        pspRows = sheetName
+          ? await parseFileSheet(file, sheetName)
+          : await parseFile(file, pspItem.fileKey);
+      } catch(err) {
+        if (statusEl) { statusEl.textContent = '❌ Read error'; statusEl.style.color = 'var(--red)'; }
+        if (barEl) { barEl.style.width = '100%'; barEl.style.background = 'var(--red)'; }
+        state.multiResults[psp] = null;
+        await yieldToUI();
+        continue;
       }
     }
-  } catch(err) {
-    toast('Worker error: ' + err.message);
-    return;
+
+    if (barEl) barEl.style.width = '50%';
+    if (statusEl) statusEl.textContent = 'Reconciling...';
+    await yieldToUI();
+
+    // Run reconciliation with only what's needed
+    const bpRows = sharedFiles['shared_bp'] || [];
+    const ppRows = sharedFiles['shared_pp'] || [];
+    const olRows = sharedFiles['shared_ol'] || [];
+
+    let result = null;
+    try {
+      if (cfg.useTripleFile)     result = await computePaysafe(cfg, pspRows, bpRows, ppRows);
+      else if (cfg.useOrderList) result = await computeZen(cfg, pspRows, olRows);
+      else if (cfg.usePayProcc)  result = await computeDLocal(cfg, pspRows, ppRows);
+      else                       result = await computeBP(cfg, BP_CONFIG, pspRows, bpRows);
+
+      if (result) {
+        result.matched        = result.matched        || [];
+        result.unmatchedBP    = result.unmatchedBP    || [];
+        result.unmatchedPSP   = result.unmatchedPSP   || [];
+        result.statusMismatch = result.statusMismatch || [];
+        result.amountMismatch = result.amountMismatch || [];
+        result.topCountries   = result.topCountries   || [];
+        result.pspApprovedBPDeclined = result.pspApprovedBPDeclined || [];
+        result.bpApprovedPSPDeclined = result.bpApprovedPSPDeclined || [];
+      }
+      if (barEl) { barEl.style.width = '100%'; }
+      if (statusEl) { statusEl.textContent = '✅ Done'; statusEl.style.color = 'var(--green)'; }
+    } catch(err) {
+      console.error('Error reconciling ' + psp + ':', err);
+      if (barEl) { barEl.style.width = '100%'; barEl.style.background = 'var(--red)'; }
+      if (statusEl) { statusEl.textContent = '❌ ' + (err?.message || 'Error').slice(0, 50); statusEl.style.color = 'var(--red)'; }
+    }
+
+    state.multiResults[psp] = result;
+
+    // Free PSP rows from memory immediately before next PSP
+    pspRows = null;
+    await yieldToUI();
+    await new Promise(r => setTimeout(r, 100));
   }
+
+  const parseEl = document.getElementById('fileReadStatus');
+  if (parseEl) parseEl.textContent = 'All done.';
 
   await delay(400);
   try {
     renderMultiResults();
   } catch(err) {
     console.error('renderMultiResults error:', err);
-    toast('Error rendering results: ' + err.message);
+    toast('Error rendering results: ' + (err?.message || String(err) || 'Unknown error'));
   }
   goToStep(4);
 }
@@ -2239,30 +2276,110 @@ async function computeBP(cfg, bp, pspRows, bpRows) {
     pspApproved      = pspRowsFiltered.filter(r => normStatus(r[cfg.statusCol]) === 'approved').length;
     pspApprovalRate  = totalPSPForRate > 0 ? (pspApproved / totalPSPForRate * 100) : 0;
   }
+  // pspMap: id -> { hasApproved, hasDeclined, approvedRow, declinedRow }
   const pspMap = new Map();
-  for (const row of pspRowsFiltered) { const id = (row[cfg.idCol] || '').trim(); if (id.startsWith('BP_')) { if (!pspMap.has(id)) pspMap.set(id, []); pspMap.get(id).push(row); } }
-  const bpMap = new Map();
-  for (const row of bpFiltered) { const id = (row[bp.idCol] || '').trim(); if (id) { if (!bpMap.has(id)) bpMap.set(id, []); bpMap.get(id).push(row); } }
-  const matched = [], statusMismatch = [], amountMismatch = [], unmatchedBP = [];
-  const seenBPIds = new Set();
-  for (const [bpId, pspList] of pspMap.entries()) {
-    const bpList = bpMap.get(bpId); seenBPIds.add(bpId);
-    for (const pspRow of pspList) {
-      const pspStatus = (pspRow[cfg.statusCol] || '').toLowerCase();
-      const pspAmount = parseFloat(pspRow[cfg.amountCol]) || 0;
-      if (!bpList || bpList.length === 0) { matched.push({ bpId, matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus: pspRow[cfg.statusCol], bpAmount: 0, pspAmount, currency: pspRow[cfg.currencyCol], email: pspRow[cfg.emailCol], paymentMethod: pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: '', country: '', cardType: '', lastFour: '', bpDate: '', pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0) }); continue; }
-      const bpRow = bpList[0];
-      const bpStatus = (bpRow[bp.statusCol] || '').toLowerCase();
-      const bpAmount = parseFloat(bpRow[bp.amountCol]) || 0;
-      const statusMatch = normStatus(pspStatus) === normStatus(bpStatus);
-      const amtMatch = Math.abs(pspAmount - bpAmount) < 0.01;
-      const record = { bpId, bpStatus: bpRow[bp.statusCol], pspStatus: pspRow[cfg.statusCol], bpAmount, pspAmount, currency: bpRow[bp.currencyCol] || pspRow[cfg.currencyCol], email: bpRow[bp.emailCol] || pspRow[cfg.emailCol], paymentMethod: bpRow[bp.methodCol] || pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0), pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0) };
-      if (!statusMatch) statusMismatch.push({ ...record, matchType: 'STATUS_MISMATCH' });
-      else if (!amtMatch) amountMismatch.push({ ...record, matchType: 'AMOUNT_MISMATCH' });
-      else matched.push({ ...record, matchType: 'MATCHED' });
+  for (const row of pspRowsFiltered) {
+    const id = (row[cfg.idCol] || '').trim();
+    if (!id.startsWith('BP_')) continue;
+    const isAppr = normStatus(row[cfg.statusCol]) === 'approved';
+    if (!pspMap.has(id)) {
+      pspMap.set(id, { hasApproved: isAppr, hasDeclined: !isAppr, approvedRow: isAppr ? row : null, declinedRow: isAppr ? null : row });
+    } else {
+      const entry = pspMap.get(id);
+      if (isAppr && !entry.hasApproved) { entry.hasApproved = true; entry.approvedRow = row; }
+      if (!isAppr && !entry.hasDeclined) { entry.hasDeclined = true; entry.declinedRow = row; }
     }
   }
-  for (const [bpId, bpList] of bpMap.entries()) { if (!seenBPIds.has(bpId)) { for (const bpRow of bpList) { unmatchedBP.push({ bpId, matchType: 'BP_ONLY', bpStatus: bpRow[bp.statusCol], pspStatus: 'N/A', bpAmount: parseFloat(bpRow[bp.amountCol]) || 0, pspAmount: 0, currency: bpRow[bp.currencyCol], email: bpRow[bp.emailCol], paymentMethod: bpRow[bp.methodCol], pspTxId: '', bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0), pspDate: '' }); } } }
+
+  // bpMap: id -> { hasApproved, hasDeclined, approvedRow, declinedRow }
+  const bpMap = new Map();
+  for (const row of bpFiltered) {
+    const id = (row[bp.idCol] || '').trim();
+    if (!id) continue;
+    const isAppr = normStatus(row[bp.statusCol]) === 'approved';
+    if (!bpMap.has(id)) {
+      bpMap.set(id, { hasApproved: isAppr, hasDeclined: !isAppr, approvedRow: isAppr ? row : null, declinedRow: isAppr ? null : row });
+    } else {
+      const entry = bpMap.get(id);
+      if (isAppr && !entry.hasApproved) { entry.hasApproved = true; entry.approvedRow = row; }
+      if (!isAppr && !entry.hasDeclined) { entry.hasDeclined = true; entry.declinedRow = row; }
+    }
+  }
+
+  const matched = [], statusMismatch = [], amountMismatch = [], unmatchedBP = [];
+  const pspApprovedBPDeclined = [];
+  const bpApprovedPSPDeclined = [];
+  const seenIds = new Set();
+
+  for (const [id, pspEntry] of pspMap.entries()) {
+    seenIds.add(id);
+    const bpEntry = bpMap.get(id);
+
+    // Use approved row as representative if exists, else declined
+    const pspRow    = pspEntry.approvedRow || pspEntry.declinedRow;
+    const pspStatus = pspRow[cfg.statusCol] || '';
+    const pspAmount = parseFloat(pspRow[cfg.amountCol]) || 0;
+    const pspApproved = pspEntry.hasApproved;
+
+    if (!bpEntry) {
+      // PSP only — no BP entry at all
+      matched.push({ bpId: id, matchType: 'PSP_ONLY', bpStatus: 'N/A', pspStatus, bpAmount: 0, pspAmount, currency: pspRow[cfg.currencyCol], email: pspRow[cfg.emailCol], paymentMethod: pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: '', country: '', cardType: '', lastFour: '', bpDate: '', pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0) });
+      continue;
+    }
+
+    if (pspApproved && bpEntry.hasApproved) {
+      // Both approved — use approved BP row, check amount
+      const bpRow = bpEntry.approvedRow;
+      const bpAmount = parseFloat(bpRow[bp.amountCol]) || 0;
+      const record = { bpId: id, bpStatus: bpRow[bp.statusCol], pspStatus, bpAmount, pspAmount, currency: bpRow[bp.currencyCol] || pspRow[cfg.currencyCol], email: bpRow[bp.emailCol] || pspRow[cfg.emailCol], paymentMethod: bpRow[bp.methodCol] || pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0), pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0) };
+      if (Math.abs(pspAmount - bpAmount) < 0.01) matched.push({ ...record, matchType: 'MATCHED' });
+      else amountMismatch.push({ ...record, matchType: 'AMOUNT_MISMATCH' });
+
+    } else if (pspApproved && !bpEntry.hasApproved) {
+      // PSP approved but BP only has declined — STATUS MISMATCH (your 66/482)
+      const bpRow = bpEntry.declinedRow;
+      const bpAmount = parseFloat(bpRow[bp.amountCol]) || 0;
+      const record = { bpId: id, bpStatus: bpRow[bp.statusCol], pspStatus, bpAmount, pspAmount, currency: bpRow[bp.currencyCol] || pspRow[cfg.currencyCol], email: bpRow[bp.emailCol] || pspRow[cfg.emailCol], paymentMethod: bpRow[bp.methodCol] || pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0), pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0) };
+      statusMismatch.push({ ...record, matchType: 'STATUS_MISMATCH' });
+      pspApprovedBPDeclined.push({ ...record, matchType: 'STATUS_MISMATCH' });
+
+    } else if (!pspApproved && bpEntry.hasApproved) {
+      // BP approved but PSP declined — STATUS MISMATCH
+      const bpRow = bpEntry.approvedRow;
+      const bpAmount = parseFloat(bpRow[bp.amountCol]) || 0;
+      const record = { bpId: id, bpStatus: bpRow[bp.statusCol], pspStatus, bpAmount, pspAmount, currency: bpRow[bp.currencyCol] || pspRow[cfg.currencyCol], email: bpRow[bp.emailCol] || pspRow[cfg.emailCol], paymentMethod: bpRow[bp.methodCol] || pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0), pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0) };
+      statusMismatch.push({ ...record, matchType: 'STATUS_MISMATCH' });
+      bpApprovedPSPDeclined.push({ ...record, matchType: 'STATUS_MISMATCH' });
+
+    } else {
+      // Both declined — matched
+      const bpRow = bpEntry.declinedRow || bpEntry.approvedRow;
+      const bpAmount = parseFloat(bpRow[bp.amountCol]) || 0;
+      const record = { bpId: id, bpStatus: bpRow[bp.statusCol], pspStatus, bpAmount, pspAmount, currency: bpRow[bp.currencyCol] || pspRow[cfg.currencyCol], email: bpRow[bp.emailCol] || pspRow[cfg.emailCol], paymentMethod: bpRow[bp.methodCol] || pspRow[cfg.methodCol], pspTxId: pspRow[cfg.txIdCol], bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0), pspDate: toGMT6(String(pspRow[cfg.dateCol] || ''), cfg.tzOffset || 0) };
+      matched.push({ ...record, matchType: 'MATCHED' });
+    }
+  }
+
+  // BP approved rows not in PSP at all
+  for (const [id, bpEntry] of bpMap.entries()) {
+    if (seenIds.has(id) || !bpEntry.hasApproved) continue;
+    const bpRow = bpEntry.approvedRow;
+    unmatchedBP.push({ bpId: id, matchType: 'BP_ONLY', bpStatus: bpRow[bp.statusCol], pspStatus: 'N/A', bpAmount: parseFloat(bpRow[bp.amountCol]) || 0, pspAmount: 0, currency: bpRow[bp.currencyCol], email: bpRow[bp.emailCol], paymentMethod: bpRow[bp.methodCol], pspTxId: '', bpTxId: bpRow[bp.txIdCol], country: bpRow[bp.countryCol] || '', cardType: bpRow[bp.cardTypeCol] || '', lastFour: bpRow[bp.lastFourCol] || '', bpDate: toGMT6(String(bpRow[bp.dateCol] || ''), 0), pspDate: '' });
+  }
+
+  // BP declined rows where PSP has an Approved entry for same ID
+  // = "BP declined but Nuvei approved" (your 66/482)
+  // These are declined attempts where Nuvei still processed it as approved
+  const bpDeclinedPSPApproved = [];
+  for (const row of bpFiltered) {
+    const id = (row[bp.idCol] || '').trim();
+    if (normStatus(row[bp.statusCol]) !== 'declined') continue;
+    const pspEntry = pspMap.get(id);
+    if (pspEntry && pspEntry.hasApproved) {
+      bpDeclinedPSPApproved.push({ bpId: id, matchType: 'STATUS_MISMATCH', bpStatus: row[bp.statusCol], pspStatus: 'Approved', bpAmount: parseFloat(row[bp.amountCol]) || 0, pspAmount: 0, currency: row[bp.currencyCol], email: row[bp.emailCol], paymentMethod: row[bp.methodCol], pspTxId: '', bpTxId: row[bp.txIdCol], country: row[bp.countryCol] || '', cardType: row[bp.cardTypeCol] || '', lastFour: row[bp.lastFourCol] || '', bpDate: toGMT6(String(row[bp.dateCol] || ''), 0), pspDate: '' });
+    }
+  }
+
   const cleanMatched = matched.filter(r => r.matchType === 'MATCHED');
   const unmatchedPSP = matched.filter(r => r.matchType === 'PSP_ONLY');
   const approvedRecords = cleanMatched.filter(r => normStatus(r.bpStatus) === 'approved');
@@ -2273,7 +2390,7 @@ async function computeBP(cfg, bp, pspRows, bpRows) {
   const countryRevMap = {};
   for (const r of approvedRecords) { if (r.country) countryRevMap[r.country] = (countryRevMap[r.country] || 0) + r.bpAmount; }
   const topCountries = Object.entries(countryRevMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  return { matched: cleanMatched, unmatchedBP, unmatchedPSP, statusMismatch, amountMismatch, totalBPTx, totalPSPTx, pspTxCount: totalPSPTx, secondTxCount: totalBPTx, approvalRate, pspApprovalRate, matchRate, totalApprovedRevenue, topCountries, secondLabel: 'BridgerPay' };
+  return { matched: cleanMatched, unmatchedBP, unmatchedPSP, statusMismatch: bpDeclinedPSPApproved, amountMismatch, pspApprovedBPDeclined: bpDeclinedPSPApproved, bpApprovedPSPDeclined, totalBPTx, totalPSPTx, pspTxCount: totalPSPTx, secondTxCount: totalBPTx, approvalRate, pspApprovalRate, matchRate, totalApprovedRevenue, topCountries, secondLabel: 'BridgerPay' };
 }
 
 async function computeZen(cfg, zenRows, orderRows) {
@@ -2488,7 +2605,8 @@ function normaliseResult(r) {
   r.unmatchedPSP  = r.unmatchedPSP  || [];
   r.statusMismatch  = r.statusMismatch  || [];
   r.amountMismatch  = r.amountMismatch  || [];
-  r.topCountries  = r.topCountries  || [];
+  r.pspApprovedBPDeclined = r.pspApprovedBPDeclined || [];
+  r.bpApprovedPSPDeclined = r.bpApprovedPSPDeclined || [];
   r.matchRate     = r.matchRate     || 0;
   r.approvalRate  = r.approvalRate  || 0;
   r.pspApprovalRate = r.pspApprovalRate || 0;
@@ -2972,23 +3090,16 @@ function readXLSX(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = e => {
-      // Yield to UI before heavy XLSX parsing so progress bars can update
       setTimeout(() => {
         try {
-          const wb = XLSX.read(e.target.result, {
-            type: 'array',
-            cellDates: true,
-            dense: false,    // standard mode
-            sheetStubs: false
-          });
+          const wb = XLSX.read(e.target.result, { type: 'binary', cellDates: true, sheetStubs: false });
           const ws = wb.Sheets[wb.SheetNames[0]];
-          const data = XLSX.utils.sheet_to_json(ws, { defval: '' });
-          resolve(data);
-        } catch(err) { reject(err); }
+          resolve(XLSX.utils.sheet_to_json(ws, { defval: '' }));
+        } catch(err) { reject(new Error(err?.message || String(err) || 'Failed to parse Excel file')); }
       }, 50);
     };
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
+    reader.onerror = () => reject(new Error('Failed to read ' + file.name));
+    reader.readAsBinaryString(file);
   });
 }
 
@@ -2998,30 +3109,26 @@ function readCSV(file) {
       header: true,
       skipEmptyLines: true,
       complete: r => resolve(r.data),
-      error: reject
+      error: (err) => reject(new Error(err?.message || String(err) || 'Failed to parse CSV file'))
     });
   });
 }
 
-// Read a specific sheet by name from an XLSX file, or fall back to first sheet
 function parseFileSheet(file, sheetName) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = e => {
       setTimeout(() => {
         try {
-          const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true, sheetStubs: false });
-          console.log('Available sheets in', file.name, ':', wb.SheetNames);
+          const wb = XLSX.read(e.target.result, { type: 'binary', cellDates: true, sheetStubs: false });
           const targetSheet = wb.SheetNames.find(s => s === sheetName) || wb.SheetNames[0];
-          console.log('Using sheet:', targetSheet, '(requested:', sheetName, ')');
           const ws = wb.Sheets[targetSheet];
-          const data = XLSX.utils.sheet_to_json(ws, { defval: '' });
-          resolve(data);
-        } catch(err) { reject(err); }
+          resolve(XLSX.utils.sheet_to_json(ws, { defval: '' }));
+        } catch(err) { reject(new Error(err?.message || String(err) || 'Failed to parse file')); }
       }, 50);
     };
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
+    reader.onerror = () => reject(new Error('Failed to read ' + file.name));
+    reader.readAsBinaryString(file);
   });
 }
 
@@ -3110,7 +3217,7 @@ async function runInWorker(jobs) {
         const bar = document.getElementById('mpb_' + job.psp);
         const status = document.getElementById('mps_' + job.psp);
         if (bar) { bar.style.width = '100%'; bar.style.background = 'var(--red)'; }
-        if (status) { status.textContent = '❌ Error'; status.style.color = 'var(--red)'; }
+        if (status) { status.textContent = '❌ ' + (err?.message || String(err) || 'Error').slice(0, 60); status.style.color = 'var(--red)'; }
       }
       console.error('Error reconciling ' + job.psp + ':', err);
       results[job.psp] = null;
@@ -3139,7 +3246,7 @@ async function runReconciliation() {
       thirdRows = await parseFile(state.thirdFile, 'third');
     }
   } catch(err) {
-    toast('Error reading files: ' + err.message);
+    toast('Error reading files: ' + (err?.message || String(err) || 'Unknown error'));
     goToStep(2);
     return;
   }
@@ -3169,7 +3276,7 @@ async function runReconciliation() {
     renderResults();
     goToStep(4);
   } catch(err) {
-    toast('Reconciliation error: ' + err.message);
+    toast('Reconciliation error: ' + (err?.message || String(err) || 'Unknown error'));
     goToStep(2);
   }
 }
@@ -4049,7 +4156,9 @@ function renderResults() {
     <div class="stat-card yellow">
       <div class="stat-label">Status Mismatch</div>
       <div class="stat-value" style="color:var(--yellow)">${r.statusMismatch.length.toLocaleString()}</div>
-      <div class="stat-sub">Status differs</div>
+      <div class="stat-sub" style="font-size:9px">
+        ${(r.pspApprovedBPDeclined||[]).length} PSP ✓ BP ✗ &nbsp;·&nbsp; ${(r.bpApprovedPSPDeclined||[]).length} BP ✓ PSP ✗
+      </div>
     </div>
     <div class="stat-card purple">
       <div class="stat-label">Amount Mismatch</div>
@@ -4094,7 +4203,8 @@ function buildCountryStats(records) {
     if (!c) continue;
     if (!map[c]) map[c] = { country: c, total: 0, pspApproved: 0, pspDeclined: 0, orchApproved: 0, orchDeclined: 0, revenue: 0 };
     map[c].total++;
-    if (normStatus(rec.pspStatus) === 'approved') { map[c].pspApproved++; map[c].revenue += (rec.pspAmount || rec.bpAmount || 0); }
+    const pspAppr = normStatus(rec.pspStatus) === 'approved' || (rec.pspStatus || '').trim() === 'Settlement';
+    if (pspAppr) { map[c].pspApproved++; map[c].revenue += (rec.pspAmount || rec.bpAmount || 0); }
     else map[c].pspDeclined++;
     if (normStatus(rec.bpStatus) === 'approved') map[c].orchApproved++;
     else map[c].orchDeclined++;
@@ -4398,6 +4508,37 @@ function filterTable() {
 
   state.filteredRows = rows;
 
+  // Show direction breakdown banner for status mismatch tab
+  let bannerEl = document.getElementById('mismatchDirectionBanner');
+  if (state.currentTab === 'status_mismatch' && state.results) {
+    const r = state.results;
+    const pspWins = (r.pspApprovedBPDeclined||[]).length;
+    const bpWins  = (r.bpApprovedPSPDeclined||[]).length;
+    if (!bannerEl) {
+      const tableArea = document.getElementById('tableHead')?.closest('table')?.parentElement;
+      if (tableArea) {
+        bannerEl = document.createElement('div');
+        bannerEl.id = 'mismatchDirectionBanner';
+        tableArea.insertAdjacentElement('beforebegin', bannerEl);
+      }
+    }
+    if (bannerEl) bannerEl.innerHTML = `
+      <div style="display:flex;gap:12px;margin-bottom:10px;flex-wrap:wrap">
+        <div style="padding:8px 14px;background:rgba(22,163,74,0.08);border:1px solid rgba(22,163,74,0.3);border-radius:6px;font-size:12px">
+          <strong style="color:var(--green)">${pspWins.toLocaleString()}</strong>
+          <span style="color:var(--text2)"> — PSP Approved, BP Declined</span>
+          <span style="font-size:10px;color:var(--text3);margin-left:4px">(PSP charged, orchestrator missed)</span>
+        </div>
+        <div style="padding:8px 14px;background:rgba(220,38,38,0.06);border:1px solid rgba(220,38,38,0.2);border-radius:6px;font-size:12px">
+          <strong style="color:var(--red)">${bpWins.toLocaleString()}</strong>
+          <span style="color:var(--text2)"> — BP Approved, PSP Declined</span>
+          <span style="font-size:10px;color:var(--text3);margin-left:4px">(Orchestrator approved, PSP rejected)</span>
+        </div>
+      </div>`;
+  } else if (bannerEl) {
+    bannerEl.innerHTML = '';
+  }
+
   // Update count label
   const countEl = document.getElementById('dateFilterCount');
   const allRows = getTabRows();
@@ -4593,7 +4734,7 @@ async function runRevenueSummary() {
       }
       parsed[type] = rows;
     } catch(err) {
-      toast('Error reading ' + type + ': ' + err.message);
+      toast('Error reading ' + type + ': ' + (err?.message || String(err) || 'Unknown error'));
     }
   }
 
@@ -4905,12 +5046,17 @@ function refreshDashboard() {
         stlOutstanding = s.totalTxnAmt - s.totalStlAmt - s.totalFees;
         stlStatus      = Math.abs(stlOutstanding) < 1 ? 'healthy' : stlOutstanding > 0 ? 'warning' : 'healthy';
       } else if (s.type === 'paysafe') {
-        // Sum across currencies in USD equivalent (simplified)
         stlReceived    = Object.values(s.received).reduce((a,b) => a+b, 0);
         stlExpected    = Object.values(s.expected).reduce((a,b) => a+b, 0);
         stlFees        = 0;
         stlOutstanding = stlExpected - stlReceived;
         stlStatus      = stlOutstanding <= 0 ? 'healthy' : stlOutstanding < stlExpected * 0.05 ? 'warning' : 'critical';
+      } else if (s.type === 'generic') {
+        stlReceived    = s.net;
+        stlExpected    = s.gross;
+        stlFees        = s.fees;
+        stlOutstanding = s.gap || 0;
+        stlStatus      = Math.abs(stlOutstanding) < 0.01 ? 'healthy' : Math.abs(stlOutstanding) < s.gross * 0.05 ? 'warning' : 'critical';
       }
       if (stlReceived !== null) grandReceived += stlReceived;
       if (stlOutstanding !== null && stlOutstanding > 0) grandOutstanding += stlOutstanding;
@@ -4951,16 +5097,6 @@ function refreshDashboard() {
   const reconCount = Object.keys(reconResults).length;
   const settleCount = Object.keys(dashSettlement).length;
   document.getElementById('dashKPICards').innerHTML = `
-    <div class="stat-card green">
-      <div class="stat-label">PSPs Reconciled</div>
-      <div class="stat-value" style="color:var(--green)">${reconCount} / ${ALL_PSPS.length}</div>
-      <div class="stat-sub">Transaction reconciliation</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Settlements Run</div>
-      <div class="stat-value" style="color:var(--accent)">${settleCount} / ${ALL_PSPS.length}</div>
-      <div class="stat-sub">Settlement reconciliation</div>
-    </div>
     <div class="stat-card green">
       <div class="stat-label">Total Matched Txns</div>
       <div class="stat-value" style="color:var(--green)">${grandMatched.toLocaleString()}</div>
@@ -5041,7 +5177,7 @@ async function runSettlementRecon() {
     invoiceRows = await parseFile(sState.invoiceFile, 'invoice');
     bankRows    = await parseFile(sState.bankFile, 'bank');
   } catch(err) {
-    toast('Error reading files: ' + err.message);
+    toast('Error reading files: ' + (err?.message || String(err) || 'Unknown error'));
     btn.disabled = false; btn.textContent = '\u26A1 Reconcile Settlement \u2192';
     return;
   }
@@ -5234,7 +5370,7 @@ async function runZenSettlement() {
     authRows   = await parseFile(zenSettleState.authFile, 'auth');
     settleRows = await parseFile(zenSettleState.settleFile, 'settle');
   } catch(err) {
-    toast('Error reading files: ' + err.message);
+    toast('Error reading files: ' + (err?.message || String(err) || 'Unknown error'));
     btn.disabled = false; btn.textContent = '⚡ Reconcile →';
     return;
   }
@@ -5548,7 +5684,7 @@ async function runNuveiAeSettlement() {
     nuveiRows = await parseFile(naeState.nuveiFile, 'nuvei');
     paRows    = await parseFile(naeState.paFile, 'pa');
   } catch(err) {
-    toast('Error reading files: ' + err.message);
+    toast('Error reading files: ' + (err?.message || String(err) || 'Unknown error'));
     btn.disabled = false; btn.textContent = '⚡ Reconcile →';
     return;
   }
@@ -5817,13 +5953,14 @@ async function runPayablAnalysis() {
     breakRows = await parseFile(payablState.breakFile, 'break');
     await yieldToUI();
   } catch(err) {
-    toast('Error reading files: ' + err.message);
+    toast('Error reading files: ' + (err?.message || String(err) || 'Unknown error'));
     btn.disabled = false; btn.textContent = '⚡ Analyse →';
     return;
   }
 
   const data = payablAnalyse(txRows, breakRows);
   payablState.data = data;
+  dashSettlement['payabl'] = { type:'generic', gross:data.grossTotal, fees:Math.abs(data.totalFees), net:data.netTotal, gap:0 };
   payablRenderResults(data);
   btn.disabled = false; btn.textContent = '⚡ Analyse →';
 }
@@ -6207,13 +6344,14 @@ async function runTrustAnalysis() {
     txRows = await parseFile(trustState.txFile, 'tx');
     await yieldToUI();
   } catch(err) {
-    toast('Error reading file: ' + err.message);
+    toast('Error reading file: ' + (err?.message || String(err) || 'Unknown error'));
     btn.disabled = false; btn.textContent = '⚡ Analyse →';
     return;
   }
 
   const data = trustAnalyse(txRows);
   trustState.data = data;
+  dashSettlement['trustpayments'] = { type:'generic', gross:data.grossAmount, fees:Math.abs(data.totalFees), net:data.netAmount, gap:data.settlementGap };
   trustRenderResults(data);
   btn.disabled = false; btn.textContent = '⚡ Analyse →';
 }
@@ -6694,9 +6832,10 @@ async function runDlocalSettlement() {
     await yieldToUI();
     const data = dlocalAnalyse(rawText);
     dlocalState.data = data;
+    dashSettlement['dlocal'] = { type:'generic', gross:data.grossTotal, fees:Math.abs(data.feeTotal)+Math.abs(data.taxTotal), net:data.netTotal, gap:data.gap };
     dlocalRenderResults(data);
   } catch(err) {
-    toast('Error: ' + err.message);
+    toast('Error: ' + (err?.message || String(err) || 'Unknown error'));
   }
 
   btn.disabled = false; btn.textContent = '⚡ Analyse →';
@@ -7027,10 +7166,11 @@ async function runUnlimitSettlement() {
 
     const data = unlimitAnalyse(settleRows, orderRows);
     unlimitState.data = data;
+    dashSettlement['unlimit'] = { type:'generic', gross:data.totalTxAmount, fees:data.totalFees, net:data.totalNetCalc, gap:0 };
     unlimitRenderResults(data);
   } catch(err) {
     console.error('Unlimit error:', err);
-    toast('Error: ' + err.message);
+    toast('Error: ' + (err?.message || String(err) || 'Unknown error'));
   }
   btn.disabled = false; btn.textContent = '⚡ Analyse →';
 }
@@ -7347,8 +7487,9 @@ async function runNuveiEuSettlement() {
     await yieldToUI();
     const data = nuveiEuAnalyse(rows);
     nuveiEuState.data = data;
+    dashSettlement['nuvei-eu'] = { type:'generic', gross:data.grossAmount, fees:data.totalFees, net:data.netCalc, gap:data.gap };
     nuveiEuRenderResults(data);
-  } catch(err) { toast('Error: ' + err.message); console.error(err); }
+  } catch(err) { toast('Error: ' + (err?.message || String(err) || 'Unknown error')); console.error(err); }
   btn.disabled = false; btn.textContent = '⚡ Analyse →';
 }
 
