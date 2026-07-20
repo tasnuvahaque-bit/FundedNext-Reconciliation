@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Paysafe Invoice Parser</title>
+<title>Paysafe Invoice Parser - With True Account ID Mapping</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
@@ -58,6 +58,18 @@
   .upload-icon { font-size: 48px; margin-bottom: 16px; display: block; filter: grayscale(0.3); }
   .upload-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 18px; }
   .upload-sub { color: var(--text-muted); font-size: 12px; }
+  .upload-btn {
+    display: inline-block;
+    margin-top: 12px;
+    padding: 8px 16px;
+    background: var(--accent);
+    border-radius: 6px;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .upload-btn:hover { background: #8b85ff; }
 
   .file-list { margin-top: 24px; display: flex; flex-direction: column; gap: 8px; }
   .file-item {
@@ -65,15 +77,20 @@
     padding: 12px 16px; background: var(--surface2); border: 1px solid var(--border);
     border-radius: 10px; font-size: 12px;
   }
+  .file-icon { font-size: 14px; }
   .file-name { flex: 1; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
+  .file-size { color: var(--text-muted); font-size: 11px; }
   .file-status { font-size: 11px; padding: 3px 8px; border-radius: 20px; font-weight: 500; }
   .file-status.pending { background: rgba(107,107,138,0.2); color: var(--text-muted); }
   .file-status.processing { background: rgba(108,99,255,0.2); color: var(--accent); }
   .file-status.done { background: rgba(67,233,123,0.15); color: var(--success); }
   .file-status.error { background: rgba(255,101,132,0.15); color: var(--error); }
+  .remove-btn {
+    background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 18px; padding: 0;
+  }
+  .remove-btn:hover { color: var(--error); }
 
-  .actions { margin-top: 28px; display: flex; gap: 12px; }
+  .actions { margin-top: 28px; display: flex; gap: 12px; display: none; }
   .btn-process {
     flex: 1; padding: 14px 32px;
     background: linear-gradient(135deg, var(--accent), #8b85ff);
@@ -81,12 +98,23 @@
     font-family: 'Syne', sans-serif; font-weight: 700; font-size: 15px; color: #fff;
     cursor: pointer;
   }
+  .btn-process:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(108,99,255,0.3); }
+  .btn-process:disabled { opacity: 0.6; cursor: not-allowed; }
   .btn-clear { padding: 14px 20px; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; color: var(--text-muted); cursor: pointer; }
+  .btn-clear:hover { border-color: var(--accent); }
 
   .progress-bar-wrap { margin-top: 16px; height: 3px; background: var(--border); border-radius: 99px; overflow: hidden; display: none; }
   .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); width: 0%; transition: width 0.4s ease; }
 
+  .log { margin-top: 16px; font-size: 11px; color: var(--text-muted); display: none; max-height: 120px; overflow-y: auto; background: var(--surface2); padding: 12px; border-radius: 8px; }
+  .log-line { margin-bottom: 4px; }
+  .log-line.ok { color: var(--success); }
+  .log-line.err { color: var(--error); }
+
   .results-section { margin-top: 40px; display: none; }
+  .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .section-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 16px; }
+  .result-count { color: var(--text-muted); font-size: 12px; }
 
   .summary-bar {
     background: var(--surface2);
@@ -94,7 +122,7 @@
     border-radius: 12px;
     padding: 16px 24px;
     margin-bottom: 24px;
-    display: flex;
+    display: none;
     flex-wrap: wrap;
     gap: 24px;
     align-items: center;
@@ -103,6 +131,16 @@
   .summary-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); }
   .summary-value { font-size: 22px; font-weight: 700; font-family: 'Syne', sans-serif; }
   .summary-currency { font-size: 13px; color: var(--text-muted); margin-left: 4px; }
+
+  .export-buttons { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .btn-download {
+    padding: 12px 20px;
+    background: linear-gradient(135deg, var(--accent3), #38d167);
+    border: none; border-radius: 10px;
+    font-family: 'Syne', sans-serif; font-weight: 700; font-size: 13px; color: #0a0a0f;
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+  }
+  .btn-download:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(67,233,123,0.3); }
 
   .table-wrap { overflow-x: auto; border-radius: 12px; border: 1px solid var(--border); }
   table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
@@ -113,44 +151,6 @@
   .cell-currency { color: var(--text-muted); font-size: 11px; }
   .settlement-positive { color: var(--success); font-weight: 600; }
   .settlement-negative { color: var(--error); font-weight: 600; }
-
-  .btn-download {
-    margin-top: 20px; padding: 14px 28px;
-    background: linear-gradient(135deg, var(--accent3), #38d167);
-    border: none; border-radius: 10px;
-    font-family: 'Syne', sans-serif; font-weight: 700; font-size: 14px; color: #0a0a0f;
-    display: flex; align-items: center; gap: 8px; cursor: pointer;
-  }
-
-  .log { margin-top: 16px; font-size: 11px; color: var(--text-muted); display: none; max-height: 120px; overflow-y: auto; }
-  .log-line.ok { color: var(--success); }
-  .log-line.err { color: var(--error); }
-
-  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-  .section-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 18px; }
-  .result-count { font-size: 12px; color: var(--text-muted); }
-
-  .upload-btn {
-    display: inline-block;
-    margin-top: 16px;
-    padding: 10px 24px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font-size: 13px;
-    cursor: pointer;
-    transition: border-color 0.2s;
-  }
-  .upload-btn:hover { border-color: var(--accent); }
-
-  #fileInput { display: none; }
-  .remove-btn {
-    background: none; border: none; color: var(--text-muted);
-    font-size: 16px; cursor: pointer; padding: 0 4px;
-  }
-  .remove-btn:hover { color: var(--error); }
-  .file-icon { font-size: 14px; }
-  .file-size { color: var(--text-muted); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -162,7 +162,7 @@
       <span style="font-family:'Syne',sans-serif;font-weight:700;font-size:14px;color:var(--text-muted);letter-spacing:2px;text-transform:uppercase;">Paysafe</span>
     </div>
     <h1>Invoice Parser</h1>
-    <p class="subtitle">100% local • No API key • Works offline</p>
+    <p class="subtitle">100% local • Embedded True Account ID Mapping • Works offline</p>
   </header>
 
   <div class="upload-zone" id="uploadZone">
@@ -170,12 +170,12 @@
     <div class="upload-title">Drop your Paysafe PDF invoices here</div>
     <div class="upload-sub">Supports multiple files • Completely private</div>
     <div class="upload-btn" onclick="document.getElementById('fileInput').click()">Browse Files</div>
-    <input type="file" id="fileInput" multiple accept=".pdf">
+    <input type="file" id="fileInput" multiple accept=".pdf" style="display:none;">
   </div>
 
   <div class="file-list" id="fileList"></div>
 
-  <div class="actions" id="actions" style="display:none;">
+  <div class="actions" id="actions">
     <button class="btn-process" id="processBtn" onclick="processAll()">⚡ Extract & Parse All Invoices</button>
     <button class="btn-clear" onclick="clearAll()">Clear</button>
   </div>
@@ -192,18 +192,25 @@
       <div class="result-count" id="resultCount">0 invoices</div>
     </div>
 
-    <div class="summary-bar" id="summaryBar" style="display:none;">
+    <div class="summary-bar" id="summaryBar">
       <div class="summary-item"><div class="summary-label">Processed Invoices</div><div class="summary-value" id="processedCount">0</div></div>
       <div class="summary-item"><div class="summary-label">Total Settlement USD</div><div><span class="summary-value" id="totalUSD">0.00</span><span class="summary-currency">USD</span></div></div>
       <div class="summary-item"><div class="summary-label">Total Settlement GBP</div><div><span class="summary-value" id="totalGBP">0.00</span><span class="summary-currency">GBP</span></div></div>
       <div class="summary-item"><div class="summary-label">Total Settlement EUR</div><div><span class="summary-value" id="totalEUR">0.00</span><span class="summary-currency">EUR</span></div></div>
     </div>
 
+    <div class="export-buttons">
+      <button class="btn-download" onclick="exportExcel()"><span>📊</span> Download Excel</button>
+      <button class="btn-download" onclick="exportCSV()"><span>📋</span> Download CSV</button>
+      <button class="btn-download" onclick="exportJSON()"><span>📝</span> Download JSON</button>
+    </div>
+
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>Account No.</th>
+            <th>Account ID (True)</th>
+            <th>Account Number (Parsed)</th>
             <th>Month / Year</th>
             <th>Processing Currency</th>
             <th>Net Sales Value (Converted)</th>
@@ -220,15 +227,51 @@
         <tbody id="resultsBody"></tbody>
       </table>
     </div>
-    <button class="btn-download" onclick="exportExcel()">
-      <span>📊</span> Download Excel
-    </button>
   </div>
 
 </div>
 
 <script>
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  // EMBEDDED MAPPING
+  const TRUE_ACCOUNT_MAPPING = {
+    "282204": "1003036062",
+    "285404": "1003050992",
+    "285424": "1003051012",
+    "282514": "1003038962",
+    "282124": "1003035982",
+    "282134": "1003035992",
+    "282474": "1003038922",
+    "282564": "1003039012",
+    "273064": "1003003402",
+    "282184": "1003036042",
+    "285434": "1003051032",
+    "282604": "1003039052",
+    "282494": "1003038942",
+    "282194": "1003036052",
+    "282174": "1003036032",
+    "285414": "1003051002",
+    "282454": "1003038902",
+    "282584": "1003039032",
+    "282534": "1003038982",
+    "282144": "1003036002",
+    "282434": "1003038882",
+    "282444": "1003038892",
+    "282154": "1003036012",
+    "282524": "1003038972",
+    "282554": "1003039002",
+    "282164": "1003036022",
+    "282544": "1003038992",
+    "282614": "1003039062",
+    "375912": "1003413514",
+    "282464": "1003038912",
+    "282214": "1003036102",
+    "282574": "1003039022",
+    "282484": "1003038932",
+    "282224": "1003036132",
+    "282504": "1003038952"
+  };
 
   let files = [];
   let results = [];
@@ -327,8 +370,13 @@
     const gatewayMatch = fullText.match(/Gateway charge\s*([\d.,]+)\s*\(\w{3}\)/i);
     const adHocMatch = fullText.match(/Ad hoc and adjustment charges\s*([\d.,]+)\s*\(\w{3}\)/i);
 
+    let parsedAccount = accountMatch ? accountMatch[1].trim() : null;
+    let normalizedParsed = parsedAccount ? parsedAccount.replace(/^0+/, '') || '0' : null;
+    let trueAccountId = normalizedParsed ? TRUE_ACCOUNT_MAPPING[normalizedParsed] || parsedAccount : null;
+
     return {
-      accountNumber: accountMatch ? accountMatch[1] : '—',
+      trueAccountId: trueAccountId || '',
+      accountNumberParsed: parsedAccount || '',
       monthYear: monthYear,
       totalInvoiceCharge: chargeMatch ? parseFloat(chargeMatch[1].replace(/,/g, '')) : 0,
       totalInvoiceCurrency: chargeMatch ? chargeMatch[2] : '—',
@@ -352,7 +400,7 @@
 
     const btn = document.getElementById('processBtn');
     btn.disabled = true;
-    btn.innerHTML = '⏳ Processing...';
+    btn.textContent = '⏳ Processing...';
 
     const progressWrap = document.getElementById('progressWrap');
     const progressFill = document.getElementById('progressFill');
@@ -367,7 +415,7 @@
         const data = await parsePaysafePDF(files[i]);
         results.push({ ...data, fileName: files[i].name });
         setStatus(i, 'done', '✓ Done');
-        log(`Extracted: ${files[i].name} → Account ${data.accountNumber}`, 'ok');
+        log(`Extracted: ${files[i].name} → True Account ${data.trueAccountId}`, 'ok');
       } catch (err) {
         setStatus(i, 'error', '✗ Error');
         log(`Error: ${files[i].name} — ${err.message}`, 'err');
@@ -378,7 +426,7 @@
     }
 
     btn.disabled = false;
-    btn.innerHTML = '⚡ Extract & Parse All Invoices';
+    btn.textContent = '⚡ Extract & Parse All Invoices';
     renderResults();
   }
 
@@ -410,10 +458,8 @@
 
     results.forEach((r, idx) => {
       const tr = document.createElement('tr');
-      tr.style.animationDelay = `${idx * 0.05}s`;
-
       if (r.error) {
-        tr.innerHTML = `<td colspan="12" style="color:var(--error);">⚠ ${r.fileName} — ${r.error}</td>`;
+        tr.innerHTML = `<td colspan="13" style="color:var(--error);">⚠ ${r.fileName} — ${r.error}</td>`;
       } else {
         const settlement = (r.netSalesValueConverted || 0) - (r.totalInvoiceCharge || 0);
         const settlClass = settlement >= 0 ? 'settlement-positive' : 'settlement-negative';
@@ -421,7 +467,8 @@
         const fmt = n => isNaN(n) ? '0.00' : Number(n).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
 
         tr.innerHTML = `
-          <td class="cell-account">${r.accountNumber}</td>
+          <td class="cell-account">${r.trueAccountId}</td>
+          <td>${r.accountNumberParsed}</td>
           <td>${r.monthYear}</td>
           <td><span class="cell-currency">${r.processingCurrency}</span></td>
           <td>${fmt(r.netSalesValueConverted)} <span class="cell-currency">${cur}</span></td>
@@ -444,7 +491,7 @@
   function exportExcel() {
     const good = results.filter(r => !r.error);
     const rows = [
-      ['Account Number','Month / Year','Processing Currency','Net Sales Value (Converted)','Currency',
+      ['Account ID (True)','Account Number (Parsed)','Month / Year','Processing Currency','Net Sales Value (Converted)','Currency',
        'Total Invoice Charge','Transaction Charges','Interchange','Scheme Fees','Account Charges',
        'Gateway Charge','Ad Hoc & Adjustment Charges','Settlement Amount']
     ];
@@ -452,7 +499,7 @@
     good.forEach(r => {
       const settlement = (r.netSalesValueConverted || 0) - (r.totalInvoiceCharge || 0);
       rows.push([
-        r.accountNumber, r.monthYear, r.processingCurrency, r.netSalesValueConverted, r.totalInvoiceCurrency,
+        r.trueAccountId, r.accountNumberParsed, r.monthYear, r.processingCurrency, r.netSalesValueConverted, r.totalInvoiceCurrency,
         r.totalInvoiceCharge, r.transactionCharges, r.interchange, r.schemeFees, r.accountCharges,
         r.gatewayCharge, r.adHocCharges, settlement
       ]);
@@ -460,7 +507,7 @@
 
     const ws = XLSX.utils.aoa_to_sheet(rows);
     ws['!cols'] = [
-      {wch:16},{wch:14},{wch:18},{wch:26},{wch:12},
+      {wch:18},{wch:18},{wch:14},{wch:18},{wch:26},{wch:12},
       {wch:20},{wch:18},{wch:18},{wch:18},{wch:18},{wch:18},{wch:22},{wch:22}
     ];
 
@@ -468,6 +515,32 @@
     XLSX.utils.book_append_sheet(wb, ws, 'Paysafe Invoices');
     const month = good[0]?.monthYear?.replace(' ', '_') || 'invoices';
     XLSX.writeFile(wb, `Paysafe_${month}.xlsx`);
+  }
+
+  function exportCSV() {
+    const good = results.filter(r => !r.error);
+    let csv = 'Account ID (True),Account Number (Parsed),Month / Year,Processing Currency,Net Sales Value (Converted),Currency,Total Invoice Charge,Transaction Charges,Interchange,Scheme Fees,Account Charges,Gateway Charge,Ad Hoc & Adjustment Charges,Settlement Amount\n';
+    
+    good.forEach(r => {
+      const settlement = (r.netSalesValueConverted || 0) - (r.totalInvoiceCharge || 0);
+      csv += `"${r.trueAccountId}","${r.accountNumberParsed}","${r.monthYear}","${r.processingCurrency}",${r.netSalesValueConverted},"${r.totalInvoiceCurrency}",${r.totalInvoiceCharge},${r.transactionCharges},${r.interchange},${r.schemeFees},${r.accountCharges},${r.gatewayCharge},${r.adHocCharges},${settlement}\n`;
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `Paysafe_${new Date().toISOString().slice(0,10)}.csv`;
+    link.click();
+  }
+
+  function exportJSON() {
+    const good = results.filter(r => !r.error);
+    const json = JSON.stringify(good, null, 2);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `Paysafe_${new Date().toISOString().slice(0,10)}.json`;
+    link.click();
   }
 </script>
 </body>
