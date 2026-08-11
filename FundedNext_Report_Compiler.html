@@ -257,8 +257,11 @@
   <div class="stats-bar" id="statsBar"></div>
 
   <div class="actions">
-    <button class="btn btn-primary" id="compileBtn" disabled onclick="compile()">
-      ⚡ Compile Report
+    <button class="btn btn-primary" id="compileBtn" disabled onclick="compile('full')">
+      ⚡ Compile Report (6 tabs)
+    </button>
+    <button class="btn btn-secondary" id="breakdownBtn" disabled onclick="compile('breakdown')">
+      ↓ Breakdown (All) only
     </button>
     <button class="btn btn-clear" id="clearBtn" onclick="clearAll()">✕ Clear</button>
   </div>
@@ -346,6 +349,7 @@ function renderChips() {
     fileList.appendChild(chip);
   });
   compileBtn.disabled = state.files.length === 0;
+  document.getElementById('breakdownBtn').disabled = state.files.length === 0;
   if (state.files.length > 0) logWrap.classList.add('show');
 }
 
@@ -358,6 +362,7 @@ function clearAll() {
   progressWrap.classList.remove('show');
   resultBanner.classList.remove('show');
   compileBtn.disabled = true;
+  document.getElementById('breakdownBtn').disabled = true;
   fileInput.value = '';
 }
 
@@ -485,7 +490,6 @@ function parseSettlementXlsx(arrayBuffer, fileName) {
   const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
   const currency = (fileName.split('_')[2] || '').toUpperCase();
 
-  // read sheet as array of arrays
   const getRows = (sheetName) => {
     const ws = wb.Sheets[sheetName];
     if (!ws) return [];
@@ -495,100 +499,169 @@ function parseSettlementXlsx(arrayBuffer, fileName) {
   const settlRows = getRows('Settlement Report');
   const txnRows   = getRows('Transaction Report');
 
-  // parse meta
-  const meta = {};
-  for (const row of settlRows) {
-    for (const cell of row) {
-      if (!cell || typeof cell !== 'string') continue;
-      if (cell.startsWith('Settlement Date:'))       meta.settlement_date    = cell.split(': ',2)[1]?.trim();
-      else if (cell.startsWith('Processing Period:')) {
-        const period = cell.split(': ',2)[1]?.trim() || '';
-        meta.processing_date = period.split(' ')[0];
+  // ── parse meta from any sheet that has it ────────────────────────────────
+  const parseMeta = (rows) => {
+    const meta = {};
+    for (const row of rows) {
+      for (const cell of row) {
+        if (!cell || typeof cell !== 'string') continue;
+        if (cell.startsWith('Settlement Date:'))        meta.settlement_date     = cell.split(': ',2)[1]?.trim();
+        else if (cell.startsWith('Processing Period:')) { const p = cell.split(': ',2)[1]?.trim()||''; meta.processing_date = p.split(' ')[0]; }
+        else if (cell.startsWith('Captured Period:'))   { const p = cell.split(': ',2)[1]?.trim()||''; meta.processing_date = meta.processing_date || p.split(' ')[0]; }
+        else if (cell.startsWith('Wallet ID:'))         meta.wallet_id           = cell.split(': ',2)[1]?.trim().replace(/\s/g,'');
+        else if (cell.startsWith('Settlement Currency:'))meta.settlement_currency = cell.split(': ',2)[1]?.trim();
+        else if (cell.startsWith('Processing Currency:'))meta.processing_currency = cell.split(': ',2)[1]?.trim();
+        else if (cell.startsWith('Settlement ID:'))     meta.settlement_id       = cell.split(': ',2)[1]?.trim();
       }
-      else if (cell.startsWith('Wallet ID:'))         meta.wallet_id          = cell.split(': ',2)[1]?.trim();
-      else if (cell.startsWith('Settlement Currency:'))meta.settlement_currency= cell.split(': ',2)[1]?.trim();
-      else if (cell.startsWith('Processing Currency:'))meta.processing_currency= cell.split(': ',2)[1]?.trim();
+      // also check adjacent cell for wallet id (some formats: ['Wallet ID: ', '155013'])
+      for (let ci = 0; ci < row.length - 1; ci++) {
+        if (row[ci] && typeof row[ci] === 'string' && row[ci].trim() === 'Wallet ID:') {
+          meta.wallet_id = String(row[ci+1] || '').trim();
+        }
+      }
     }
+    return meta;
+  };
+
+  // merge meta from both sheets
+  const meta = { ...parseMeta(settlRows), ...parseMeta(txnRows) };
+  // settlement date may only be in txnRows for www.fundednext.com format
+  if (!meta.settlement_date) {
+    const m2 = parseMeta(txnRows);
+    Object.assign(meta, m2);
   }
 
-  // find header row
-  const findHdr = (rows, firstCol) => rows.findIndex(r => r && r.some(c => c === firstCol));
+  // ── build column index map from header row ────────────────────────────────
+  // Returns { colName: colIndex } for a given header row array
+  const buildColMap = (headerRow) => {
+    const map = {};
+    if (!headerRow) return map;
+    headerRow.forEach((cell, i) => {
+      if (cell && typeof cell === 'string') {
+        const key = cell.trim().toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
+        map[key] = i;
+        map[cell.trim()] = i; // also keep original
+      }
+    });
+    return map;
+  };
 
-  // settlement summary
-  const sHdr = findHdr(settlRows, 'Transaction Date');
-  let summary = null;
-  let rollingReserve = 0, grandTotal = 0;
+  const rowVal = (row, colMap, ...keys) => {
+    for (const k of keys) {
+      const idx = colMap[k];
+      if (idx !== undefined && row[idx] != null) return row[idx];
+    }
+    return null;
+  };
 
-  if (sHdr >= 0) {
-    for (const row of settlRows.slice(sHdr+1)) {
-      const nn = row?.filter(c => c != null);
-      if (!nn || !nn.length) continue;
-      if (nn[0] === 'Total') {
+  const toFloat = (v) => {
+    if (v == null) return 0;
+    const n = parseFloat(String(v).replace(/,/g,''));
+    return isNaN(n) ? 0 : n;
+  };
+
+  // ── find header row index ─────────────────────────────────────────────────
+  const findHdrIdx = (rows, ...candidates) =>
+    rows.findIndex(r => r && candidates.some(c => r.some(cell => cell === c)));
+
+  // ── Settlement Summary ────────────────────────────────────────────────────
+  const sHdrIdx = findHdrIdx(settlRows, 'Transaction Date');
+  let summary = null, rollingReserve = 0, grandTotal = 0;
+
+  if (sHdrIdx >= 0) {
+    const sColMap = buildColMap(settlRows[sHdrIdx]);
+    for (const row of settlRows.slice(sHdrIdx+1)) {
+      const first = row?.find(c => c != null);
+      if (first == null) continue;
+      const firstStr = String(first).trim();
+      if (firstStr === 'Total') {
+        // Total row uses positional index but we use the header map offset
+        // The Total row aligns with headers, find col indices for each field
+        const ci = (key) => { const i = sColMap[key]; return (i !== undefined && row[i] != null) ? row[i] : null; };
         summary = {
           processing_date:     meta.processing_date    || '',
           settlement_date:     meta.settlement_date    || '',
           wallet_id:           meta.wallet_id          || '',
           processing_currency: meta.processing_currency|| '',
           settlement_currency: meta.settlement_currency|| currency,
-          quantity:            parseFloat(g(nn,1)) || 0,
-          transaction_amount:  parseFloat(g(nn,2)) || 0,
-          settlement_amount:   parseFloat(g(nn,4)) || 0,
-          interchange_fee:     parseFloat(g(nn,6)) || 0,
-          scheme_fee:          parseFloat(g(nn,7)) || 0,
-          acquirer_fee:        parseFloat(g(nn,8)) || 0,
-          fees:                parseFloat(g(nn,9)) || 0,
-          net_amount:          parseFloat(g(nn,10))|| 0,
-          rolling_reserve:     0,
-          grand_total:         0,
+          quantity:            toFloat(ci('Quantity')),
+          transaction_amount:  toFloat(ci('Transaction Amount')),
+          settlement_amount:   toFloat(ci('Settlement Amount')),
+          interchange_fee:     toFloat(ci('Interchange Fee')),
+          scheme_fee:          toFloat(ci('Scheme Fee')),
+          acquirer_fee:        toFloat(ci('Acquirer Fee')),
+          fees:                toFloat(ci('Fees')),
+          net_amount:          toFloat(ci('Net Amount')),
+          rolling_reserve:     0, grand_total: 0,
           _sort: parseDate(meta.processing_date) || new Date(0),
         };
-      } else if (typeof nn[0] === 'string' && nn[0].includes('Rolling Reserve')) {
-        rollingReserve = parseFloat(nn[1]) || 0;
-      } else if (typeof nn[0] === 'string' && nn[0].includes('Grand total')) {
-        grandTotal = parseFloat(nn[1]) || 0;
+      } else if (firstStr.includes('Rolling Reserve')) {
+        const nn = row.filter(c => c != null);
+        rollingReserve = toFloat(nn[1]);
+      } else if (firstStr.includes('Grand total') || firstStr.includes('Grand Total')) {
+        const nn = row.filter(c => c != null);
+        grandTotal = toFloat(nn[1]);
       }
     }
     if (summary) { summary.rolling_reserve = rollingReserve; summary.grand_total = grandTotal; }
   }
 
-  // transactions
-  const tHdr = findHdr(txnRows, 'Order ID');
+  // ── Transactions ──────────────────────────────────────────────────────────
+  const tHdrIdx = findHdrIdx(txnRows, 'Order ID');
   const transactions = [];
-  if (tHdr >= 0) {
-    for (const row of txnRows.slice(tHdr+1)) {
-      const nn = row?.filter(c => c != null);
-      if (!nn || !nn.length || nn[0] === 'Total') continue;
-      if (isNaN(parseFloat(nn[0]))) continue;
-      const dt = nn[1];
+
+  if (tHdrIdx >= 0) {
+    const tColMap = buildColMap(txnRows[tHdrIdx]);
+
+    // helper: get value by header name (supports alias list)
+    const cv = (row, ...keys) => {
+      for (const k of keys) {
+        const idx = tColMap[k];
+        if (idx !== undefined && row[idx] != null) return row[idx];
+      }
+      return null;
+    };
+
+    for (const row of txnRows.slice(tHdrIdx+1)) {
+      if (!row || !row.length) continue;
+      const orderId = row[tColMap['Order ID']];
+      if (orderId == null) continue;
+      if (String(orderId).trim() === 'Total') continue;
+      if (isNaN(parseFloat(String(orderId)))) continue;
+
+      const dt = cv(row, 'Date');
+      const sortDate = dt instanceof Date ? dt
+                     : parseDate(typeof dt === 'string' ? dt : String(dt)) || new Date(0);
+
       transactions.push({
-        _sort:                 parseDate(typeof dt === 'string' ? dt : String(dt)) || new Date(0),
-        order_id:              g(nn,0),
-        date:                  dt,
-        type:                  g(nn,2),
-        transaction_amount:    parseFloat(g(nn,3)) || 0,
-        transaction_currency:  g(nn,4),
-        settlement_amount:     parseFloat(g(nn,5)) || 0,
-        settlement_currency:   g(nn,6),
-        interchange_fee:       parseFloat(g(nn,7)) || 0,
-        scheme_fee:            parseFloat(g(nn,8)) || 0,
-        acquirer_fee:          parseFloat(g(nn,9)) || 0,
-        fees:                  parseFloat(g(nn,10))|| 0,
-        net_amount:            parseFloat(g(nn,11))|| 0,
-        card_brand:            g(nn,12),
-        card_product:          g(nn,13),
-        card_number:           g(nn,14),
-        card_holder:           g(nn,15),
-        card_issuer:           g(nn,16),
-        card_country:          g(nn,17),
-        customer_country:      g(nn,18),
-        '3ds':                 g(nn,19),
-        merchant_order_id:     g(nn,20),
-        arn:                   g(nn,21),
-        wallet_id:             g(nn,22),
-        region:                g(nn,23),
-        details:               g(nn,24),
-        processing_date:       meta.processing_date || '',
-        wallet_currency:       currency,
+        _sort:                sortDate,
+        order_id:             orderId,
+        date:                 dt,
+        type:                 cv(row, 'Type'),
+        transaction_amount:   toFloat(cv(row, 'Transaction Amount')),
+        transaction_currency: cv(row, 'Transaction Currency'),
+        settlement_amount:    toFloat(cv(row, 'Settlement Amount')),
+        settlement_currency:  cv(row, 'Settlement Currency'),
+        interchange_fee:      toFloat(cv(row, 'Interchange Fee')),
+        scheme_fee:           toFloat(cv(row, 'Scheme Fee')),
+        acquirer_fee:         toFloat(cv(row, 'Acquirer Fee', 'Acquirer fee')),
+        fees:                 toFloat(cv(row, 'Fees')),
+        net_amount:           toFloat(cv(row, 'Net Amount')),
+        card_brand:           cv(row, 'Card Brand'),
+        card_product:         cv(row, 'Card Product'),
+        card_number:          cv(row, 'Card Number'),
+        card_holder:          cv(row, 'Card Holder'),
+        card_issuer:          cv(row, 'Card Issuer'),
+        card_country:         cv(row, 'Card Country'),
+        customer_country:     cv(row, 'Customer Country'),
+        '3ds':                cv(row, '3DS'),
+        merchant_order_id:    cv(row, 'MerchantOrderID', 'MerchantOrderId', 'Merchant Order ID'),
+        arn:                  cv(row, 'ARN'),
+        wallet_id:            cv(row, 'Wallet ID', 'Wallet Id'),
+        region:               cv(row, 'Region'),
+        details:              cv(row, 'Details'),
+        processing_date:      meta.processing_date || '',
+        wallet_currency:      currency,
       });
     }
   }
@@ -656,8 +729,9 @@ function buildWorkbook(allSummary, allTxn) {
 }
 
 // ── main compile ──────────────────────────────────────────────────────────
-async function compile() {
+async function compile(mode = 'full') {
   compileBtn.disabled = true;
+  document.getElementById('breakdownBtn').disabled = true;
   logWrap.innerHTML = '';
   logWrap.classList.add('show');
   resultBanner.classList.remove('show');
@@ -710,60 +784,91 @@ async function compile() {
   allTxn.sort((a,b)     => (a._sort||0) - (b._sort||0));
 
   setProgress(92, 'Writing Excel file…');
-  let wb;
-  try {
-    wb = buildWorkbook(allSummary, allTxn);
-  } catch(e) {
-    log(`Error building workbook: ${e.message}`, 'err');
-    compileBtn.disabled = false;
-    return;
-  }
-
-  setProgress(100, 'Done!');
 
   // date range for filename
   const dates = allSummary.map(r => r._sort).filter(Boolean).sort((a,b)=>a-b);
+  // fall back to transaction dates if no summary
+  const txnDates = allTxn.map(r => r._sort).filter(Boolean).sort((a,b)=>a-b);
+  const allDates = dates.length ? dates : txnDates;
   const fmt = d => d ? `${String(d.getDate()).padStart(2,'0')}${String(d.getMonth()+1).padStart(2,'0')}${d.getFullYear()}` : '';
-  const rangeStr = dates.length ? `_${fmt(dates[0])}-${fmt(dates[dates.length-1])}` : '';
-  const filename = `FundedNext_Compiled${rangeStr}.xlsx`;
+  const rangeStr = allDates.length ? `_${fmt(allDates[0])}-${fmt(allDates[allDates.length-1])}` : '';
 
-  XLSX.writeFile(wb, filename);
+  let wb2, filename;
+  try {
+    if (mode === 'breakdown') {
+      // Breakdown (All) only — single sheet
+      wb2 = XLSX.utils.book_new();
+      const txnHdrs = [
+        "Order ID","Date","Type",
+        "Transaction Amount","Transaction Currency",
+        "Settlement Amount","Settlement Currency",
+        "Interchange Fee","Scheme Fee","Acquirer Fee","Fees","Net Amount",
+        "Card Brand","Card Product","Card Number","Card Holder",
+        "Card Issuer","Card Country","Customer Country","3DS",
+        "Merchant Order ID","ARN","Wallet ID","Region","Details","Processing Date"
+      ];
+      const txnKeys = [
+        'order_id','date','type','transaction_amount','transaction_currency',
+        'settlement_amount','settlement_currency','interchange_fee','scheme_fee',
+        'acquirer_fee','fees','net_amount','card_brand','card_product','card_number',
+        'card_holder','card_issuer','card_country','customer_country','3ds',
+        'merchant_order_id','arn','wallet_id','region','details','processing_date'
+      ];
+      const data = [txnHdrs, ...allTxn.map(r => txnKeys.map(k => r[k] ?? ''))];
+      XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(data), 'Breakdown (All)');
+      filename = `FundedNext_Breakdown${rangeStr}.xlsx`;
+    } else {
+      wb2 = buildWorkbook(allSummary, allTxn);
+      filename = `FundedNext_Compiled${rangeStr}.xlsx`;
+    }
+  } catch(e) {
+    log(`Error building workbook: ${e.message}`, 'err');
+    compileBtn.disabled = false;
+    document.getElementById('breakdownBtn').disabled = false;
+    return;
+  }
+
+  XLSX.writeFile(wb2, filename);
+  setProgress(100, 'Done!');
   log(`Downloaded: ${filename}`, 'ok');
 
   // stats
   const usdSum = allSummary.filter(r => r.settlement_currency==='USD');
   const eurSum = allSummary.filter(r => r.settlement_currency==='EUR');
-  const sum = (arr, k) => arr.reduce((s,r)=>s+(r[k]||0),0);
+  const sumVal = (arr, k) => arr.reduce((s,r)=>s+(r[k]||0),0);
 
   statsBar.innerHTML = `
     <div class="stat-card"><div class="stat-label">Settlement Files</div><div class="stat-value teal">${totalSettlFiles}</div></div>
     <div class="stat-card"><div class="stat-label">Transactions</div><div class="stat-value orange">${allTxn.length}</div></div>
-    <div class="stat-card"><div class="stat-label">USD Net Amount</div><div class="stat-value green">$${sum(usdSum,'net_amount').toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
-    <div class="stat-card"><div class="stat-label">EUR Net Amount</div><div class="stat-value purple">€${sum(eurSum,'net_amount').toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
+    <div class="stat-card"><div class="stat-label">USD Net Amount</div><div class="stat-value green">$${sumVal(usdSum,'net_amount').toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
+    <div class="stat-card"><div class="stat-label">EUR Net Amount</div><div class="stat-value purple">€${sumVal(eurSum,'net_amount').toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
   `;
 
-  // date range
+  // date range label
   let dateRangeLabel = '';
-  if (dates.length >= 2) {
+  if (allDates.length >= 2) {
     const opts = { day:'2-digit', month:'short', year:'numeric' };
-    dateRangeLabel = `${dates[0].toLocaleDateString('en-GB',opts)} → ${dates[dates.length-1].toLocaleDateString('en-GB',opts)}`;
+    dateRangeLabel = `${allDates[0].toLocaleDateString('en-GB',opts)} → ${allDates[allDates.length-1].toLocaleDateString('en-GB',opts)}`;
   }
+
+  const sheetTags = mode === 'breakdown'
+    ? `<span class="sheet-tag blue">Breakdown (All)</span>`
+    : `<span class="sheet-tag blue">Summary (All)</span>
+       <span class="sheet-tag blue">Breakdown (All)</span>
+       <span class="sheet-tag green">Summary (USD)</span>
+       <span class="sheet-tag green">Breakdown (USD)</span>
+       <span class="sheet-tag purple">Summary (EUR)</span>
+       <span class="sheet-tag purple">Breakdown (EUR)</span>`;
 
   resultBanner.classList.add('show');
   resultBanner.innerHTML = `
-    <div class="result-title">✅ Report compiled — <span>${filename}</span></div>
-    <div class="result-meta">${dateRangeLabel} · ${totalSettlFiles} files · ${allSummary.length} summary rows · ${allTxn.length} transactions</div>
-    <div class="result-sheets">
-      <span class="sheet-tag blue">Summary (All)</span>
-      <span class="sheet-tag blue">Breakdown (All)</span>
-      <span class="sheet-tag green">Summary (USD)</span>
-      <span class="sheet-tag green">Breakdown (USD)</span>
-      <span class="sheet-tag purple">Summary (EUR)</span>
-      <span class="sheet-tag purple">Breakdown (EUR)</span>
-    </div>
+    <div class="result-title">✅ Downloaded — <span>${filename}</span></div>
+    <div class="result-meta">${dateRangeLabel} · ${totalSettlFiles} files · ${allTxn.length} transactions</div>
+    <div class="result-sheets">${sheetTags}</div>
   `;
 
   compileBtn.disabled = false;
+  document.getElementById('breakdownBtn').disabled = false;
 }
 </script>
 </body>
