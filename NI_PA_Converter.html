@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Network International PA Report Converter — GrowthNext FZC</title>
+<title>Network International PA Report Converter & Merger — GrowthNext FZC</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -533,6 +533,221 @@
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.35; }
   }
+
+  /* ---- Mode toggle ---- */
+  .mode-toggle {
+    display: flex;
+    gap: 0;
+    margin-bottom: 32px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 4px;
+    animation: fadeUp 0.5s 0.06s ease both;
+  }
+  .mode-btn {
+    flex: 1; padding: 11px 16px;
+    background: none; border: none;
+    border-radius: 9px;
+    font-family: 'Syne', sans-serif;
+    font-size: 13px; font-weight: 700;
+    color: var(--muted); cursor: pointer;
+    transition: all 0.2s; letter-spacing: 0.02em;
+  }
+  .mode-btn.active {
+    background: var(--accent); color: #0a0c10;
+    box-shadow: 0 2px 12px rgba(0,212,170,0.25);
+  }
+  .mode-btn:not(.active):hover { color: var(--text); }
+
+  /* ---- Merge section ---- */
+  #merge-section { display: none; }
+  #merge-section.show { display: block; }
+
+  .merge-drop-zone {
+    position: relative;
+    border: 1.5px dashed var(--border);
+    border-radius: 16px;
+    padding: 40px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .merge-drop-zone::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at 50% 100%, rgba(0,153,255,0.05) 0%, transparent 60%);
+    pointer-events: none;
+  }
+  .merge-drop-zone:hover, .merge-drop-zone.drag-over {
+    border-color: var(--accent2);
+    background: rgba(0,153,255,0.04);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 40px rgba(0,153,255,0.1);
+  }
+  .merge-drop-zone.drag-over { border-style: solid; }
+
+  .merge-drop-icon {
+    width: 56px; height: 56px;
+    margin: 0 auto 16px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+  }
+  .merge-drop-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 17px; font-weight: 700; margin-bottom: 8px;
+  }
+  .merge-drop-sub { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .merge-drop-sub strong { color: var(--accent2); font-weight: 500; }
+  #merge-file-input { display: none; }
+
+  /* Queue list */
+  .merge-queue {
+    display: none;
+    margin-top: 14px;
+    flex-direction: column; gap: 6px;
+  }
+  .merge-queue.show { display: flex; }
+
+  .merge-queue-header {
+    display: flex; align-items: center;
+    justify-content: space-between;
+    padding: 0 4px 6px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px; color: var(--muted);
+    letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .merge-queue-header span { color: var(--accent2); font-weight: 600; }
+
+  .merge-file-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    animation: fadeUp 0.25s ease both;
+    transition: border-color 0.2s;
+  }
+  .merge-file-item:hover { border-color: rgba(0,153,255,0.3); }
+  .merge-file-item.valid { border-color: rgba(0,212,170,0.2); }
+  .merge-file-item.invalid { border-color: rgba(255,77,109,0.3); }
+  .merge-file-item.duplicate { border-color: rgba(245,158,11,0.3); }
+
+  .mfi-icon {
+    width: 36px; height: 36px;
+    border-radius: 8px; display: flex;
+    align-items: center; justify-content: center;
+    font-size: 16px; flex-shrink: 0;
+  }
+  .merge-file-item.valid .mfi-icon { background: rgba(0,212,170,0.1); }
+  .merge-file-item.invalid .mfi-icon { background: rgba(255,77,109,0.1); }
+  .merge-file-item.duplicate .mfi-icon { background: rgba(245,158,11,0.1); }
+
+  .mfi-info { flex: 1; min-width: 0; }
+  .mfi-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mfi-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  .mfi-badge {
+    font-size: 10px; padding: 3px 8px;
+    border-radius: 100px; font-weight: 600;
+    letter-spacing: 0.05em; flex-shrink: 0;
+  }
+  .mfi-badge.ok { background: rgba(0,212,170,0.12); color: var(--accent); }
+  .mfi-badge.err { background: rgba(255,77,109,0.12); color: var(--danger); }
+  .mfi-badge.dup { background: rgba(245,158,11,0.12); color: var(--warn); }
+
+  .mfi-remove {
+    background: none; border: none; cursor: pointer;
+    color: var(--muted); font-size: 16px; padding: 2px 4px;
+    transition: color 0.2s; flex-shrink: 0;
+  }
+  .mfi-remove:hover { color: var(--danger); }
+
+  /* Merge options */
+  .merge-options {
+    display: none;
+    margin-top: 16px; padding: 20px 22px;
+    background: var(--surface);
+    border: 1px solid var(--border); border-radius: 12px;
+  }
+  .merge-options.show { display: block; animation: fadeUp 0.3s ease both; }
+
+  .merge-date-range {
+    margin-top: 14px; padding: 12px 16px;
+    background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 10px;
+    font-size: 12px; color: var(--muted);
+    display: none;
+  }
+  .merge-date-range.show { display: block; }
+  .merge-date-range strong { color: var(--accent2); }
+
+  /* Merge progress & result panels — reuse existing styles via same classes */
+  .merge-btn {
+    display: block; width: 100%;
+    margin-top: 16px; padding: 18px;
+    background: var(--accent2); color: #fff;
+    border: none; border-radius: 12px;
+    font-family: 'Syne', sans-serif; font-size: 15px;
+    font-weight: 800; letter-spacing: 0.04em;
+    cursor: pointer; transition: all 0.2s;
+    position: relative; overflow: hidden;
+  }
+  .merge-btn::before {
+    content: ''; position: absolute;
+    top: 0; left: -100%; width: 100%; height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+    transition: left 0.4s;
+  }
+  .merge-btn:hover::before { left: 100%; }
+  .merge-btn:hover { background: #1aabff; transform: translateY(-1px); box-shadow: 0 8px 30px rgba(0,153,255,0.3); }
+  .merge-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+
+  .merge-result-panel {
+    display: none;
+    margin-top: 16px; padding: 26px;
+    background: rgba(0,153,255,0.05);
+    border: 1px solid rgba(0,153,255,0.25);
+    border-radius: 12px;
+  }
+  .merge-result-panel.show { display: block; animation: fadeUp 0.4s ease both; }
+
+  .merge-stats-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 10px; margin-bottom: 18px;
+  }
+  @media (max-width: 560px) { .merge-stats-grid { grid-template-columns: repeat(2, 1fr); } }
+
+  .merge-sheet-breakdown {
+    display: flex; flex-direction: column; gap: 8px;
+    margin-bottom: 18px; padding: 14px 16px;
+    background: var(--surface2); border-radius: 10px;
+    border: 1px solid var(--border);
+  }
+
+  .merge-download-btn {
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px; width: 100%; padding: 16px;
+    background: var(--accent2); color: #fff;
+    border: none; border-radius: 10px;
+    font-family: 'Syne', sans-serif; font-size: 14px;
+    font-weight: 800; letter-spacing: 0.04em;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .merge-download-btn:hover { background: #1aabff; transform: translateY(-1px); box-shadow: 0 6px 24px rgba(0,153,255,0.3); }
+
+  .merge-new-btn {
+    display: block; width: 100%; margin-top: 10px; padding: 12px;
+    background: none; border: 1px solid var(--border); border-radius: 10px;
+    color: var(--muted); font-family: 'DM Mono', monospace;
+    font-size: 12px; cursor: pointer; transition: all 0.2s;
+  }
+  .merge-new-btn:hover { border-color: var(--text); color: var(--text); }
 </style>
 </head>
 <body>
@@ -549,6 +764,15 @@
       Browser-only · No upload
     </div>
   </header>
+
+  <!-- Mode toggle -->
+  <div class="mode-toggle">
+    <button class="mode-btn active" id="mode-convert-btn">📄 Convert PDF → Excel</button>
+    <button class="mode-btn" id="mode-merge-btn">🔀 Merge Converted Files</button>
+  </div>
+
+  <!-- ══════════════════ CONVERT SECTION ══════════════════ -->
+  <div id="convert-section">
 
   <!-- Pills -->
   <div class="features">
@@ -714,6 +938,178 @@
       <div class="step-text"><strong>Download</strong><br>One formatted .xlsx with 4 tabs, ready to use</div>
     </div>
   </div>
+
+  </div><!-- /convert-section -->
+
+  <!-- ══════════════════ MERGE SECTION ══════════════════ -->
+  <div id="merge-section">
+
+    <div class="features">
+      <span class="pill">📂 Up to 5 weekly files</span>
+      <span class="pill">🔗 All rows combined</span>
+      <span class="pill">📋 One flat sheet each</span>
+      <span class="pill">🔢 Totals summed</span>
+      <span class="pill">🔒 100% private</span>
+    </div>
+
+    <!-- Merge drop zone -->
+    <div class="merge-drop-zone" id="merge-drop-zone">
+      <div class="merge-drop-icon">📂</div>
+      <div class="merge-drop-title">Drop your converted PA Excel files here</div>
+      <div class="merge-drop-sub">
+        Drag & drop up to <strong>5 files</strong> at once, or <strong>click to browse</strong><br>
+        Only <em>_converted.xlsx</em> files from this converter · Sorted by date automatically
+      </div>
+      <input type="file" id="merge-file-input" accept=".xlsx" multiple>
+    </div>
+
+    <!-- File queue -->
+    <div class="merge-queue" id="merge-queue">
+      <div class="merge-queue-header">
+        <span id="merge-queue-count">0 files queued</span>
+        <button id="merge-clear-all" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:11px;font-family:inherit;transition:color 0.2s;" onmouseover="this.style.color='var(--danger)'" onmouseout="this.style.color='var(--muted)'">Clear all</button>
+      </div>
+      <div id="merge-file-list"></div>
+    </div>
+
+    <!-- Merge options -->
+    <div class="merge-options" id="merge-options">
+      <div class="options-title">Merge Options</div>
+      <div class="options-grid">
+        <label class="option-item">
+          <input type="checkbox" id="mopt-header" checked>
+          <div class="checkbox-visual"></div>
+          <span class="option-label">Include combined date range header</span>
+        </label>
+        <label class="option-item">
+          <input type="checkbox" id="mopt-freeze" checked>
+          <div class="checkbox-visual"></div>
+          <span class="option-label">Freeze header row</span>
+        </label>
+        <label class="option-item">
+          <input type="checkbox" id="mopt-stripe" checked>
+          <div class="checkbox-visual"></div>
+          <span class="option-label">Alternating row colors</span>
+        </label>
+        <label class="option-item">
+          <input type="checkbox" id="mopt-source-col" checked>
+          <div class="checkbox-visual"></div>
+          <span class="option-label">Add source week column</span>
+        </label>
+      </div>
+
+      <!-- Combined date range display -->
+      <div class="merge-date-range" id="merge-date-range">
+        Combined period: <strong id="merge-period-text">—</strong>
+        &nbsp;·&nbsp; <strong id="merge-file-count-text">0</strong> valid files
+      </div>
+
+      <!-- Output tabs preview -->
+      <div class="sheet-preview" style="margin-top:14px;">
+        <div class="sheet-preview-title">Output Excel will contain (single flat sheets):</div>
+        <div class="sheet-tabs-row">
+          <div class="sheet-tab sales"><div class="sheet-tab-dot"></div>Sales</div>
+          <div class="sheet-tab refunds"><div class="sheet-tab-dot"></div>Refunds</div>
+          <div class="sheet-tab" style="border-color:rgba(255,77,109,0.35);color:var(--danger);background:rgba(255,77,109,0.08)"><div class="sheet-tab-dot" style="background:var(--danger)"></div>Chargebacks</div>
+          <div class="sheet-tab summary"><div class="sheet-tab-dot"></div>Summary</div>
+        </div>
+      </div>
+
+      <button class="merge-btn" id="merge-btn" disabled>Merge &amp; Download Excel</button>
+    </div>
+
+    <!-- Merge progress -->
+    <div class="progress-section" id="merge-progress-section">
+      <div class="progress-header">
+        <span class="progress-label" id="merge-progress-label">Merging…</span>
+        <span class="progress-pct" id="merge-progress-pct">0%</span>
+      </div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="merge-progress-bar"></div>
+      </div>
+      <div class="progress-log" id="merge-progress-log"></div>
+    </div>
+
+    <!-- Merge error -->
+    <div class="error-panel" id="merge-error-panel"></div>
+
+    <!-- Merge result -->
+    <div class="merge-result-panel" id="merge-result-panel">
+      <div class="result-header">
+        <div class="result-icon">✅</div>
+        <div>
+          <div class="result-title">Merge Complete</div>
+          <div class="result-sub" id="merge-result-sub">Ready to download</div>
+        </div>
+      </div>
+
+      <div class="merge-stats-grid">
+        <div class="stat-card">
+          <div class="stat-val green" id="mstat-sales">—</div>
+          <div class="stat-label">Sales rows</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val amber" id="mstat-refunds">—</div>
+          <div class="stat-label">Refund rows</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val red" id="mstat-chargebacks">—</div>
+          <div class="stat-label">Chargeback rows</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val blue" id="mstat-files">—</div>
+          <div class="stat-label">Files merged</div>
+        </div>
+      </div>
+
+      <div class="merge-sheet-breakdown">
+        <div class="sheet-breakdown-title">Combined Excel contains:</div>
+        <div class="sheet-row sales">
+          <div class="sheet-row-name"><div class="dot"></div>Sales</div>
+          <div class="sheet-row-count" id="mbd-sales">—</div>
+        </div>
+        <div class="sheet-row refunds">
+          <div class="sheet-row-name"><div class="dot"></div>Refunds</div>
+          <div class="sheet-row-count" id="mbd-refunds">—</div>
+        </div>
+        <div class="sheet-row chargebacks">
+          <div class="sheet-row-name"><div class="dot"></div>Chargebacks</div>
+          <div class="sheet-row-count" id="mbd-chargebacks">—</div>
+        </div>
+        <div class="sheet-row summary">
+          <div class="sheet-row-name"><div class="dot"></div>Summary (summed totals)</div>
+          <div class="sheet-row-count" id="mbd-summary">—</div>
+        </div>
+      </div>
+
+      <button class="merge-download-btn" id="merge-download-btn">
+        <span>⬇</span> Download Merged Excel
+      </button>
+      <button class="merge-new-btn" id="merge-new-btn">Merge different files →</button>
+    </div>
+
+    <!-- How it works (merge) -->
+    <div class="divider"><span class="divider-text">How merging works</span></div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">01</div>
+        <div class="step-text"><strong>Convert first</strong><br>Convert each weekly PDF using the Convert tab</div>
+      </div>
+      <div class="step">
+        <div class="step-num">02</div>
+        <div class="step-text"><strong>Drop all files</strong><br>Load up to 5 converted .xlsx files here</div>
+      </div>
+      <div class="step">
+        <div class="step-num">03</div>
+        <div class="step-text"><strong>Auto-sorted</strong><br>Files ordered by date, all rows stacked cleanly</div>
+      </div>
+      <div class="step">
+        <div class="step-num">04</div>
+        <div class="step-text"><strong>One file</strong><br>Single Excel with Sales, Refunds, Chargebacks & summed Summary</div>
+      </div>
+    </div>
+
+  </div><!-- /merge-section -->
 
 </div><!-- /container -->
 
@@ -1152,6 +1548,662 @@ downloadBtn.addEventListener('click', () => {
   const a = document.createElement('a');
   a.href = url; a.download = outputFilename; a.click();
   URL.revokeObjectURL(url);
+});
+
+// ══════════════════════════════════════════════════════════════
+// ─── MODE TOGGLE ─────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+const modeConvertBtn  = document.getElementById('mode-convert-btn');
+const modeMergeBtn    = document.getElementById('mode-merge-btn');
+const convertSection  = document.getElementById('convert-section');
+const mergeSectionEl  = document.getElementById('merge-section');
+
+modeConvertBtn.addEventListener('click', () => {
+  modeConvertBtn.classList.add('active');
+  modeMergeBtn.classList.remove('active');
+  convertSection.style.display = 'block';
+  mergeSectionEl.classList.remove('show');
+});
+
+modeMergeBtn.addEventListener('click', () => {
+  modeMergeBtn.classList.add('active');
+  modeConvertBtn.classList.remove('active');
+  convertSection.style.display = 'none';
+  mergeSectionEl.classList.add('show');
+});
+
+// ══════════════════════════════════════════════════════════════
+// ─── MERGE LOGIC ─────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+
+// State
+const mergeFiles = [];          // { file, name, dateKey, periodLabel, valid, reason }
+let   mergeWorkbookBlob = null;
+let   mergeOutputFilename = 'PA_merged.xlsx';
+
+// DOM refs (merge)
+const mergeDropZone       = document.getElementById('merge-drop-zone');
+const mergeFileInput      = document.getElementById('merge-file-input');
+const mergeQueueEl        = document.getElementById('merge-queue');
+const mergeFileList       = document.getElementById('merge-file-list');
+const mergeQueueCount     = document.getElementById('merge-queue-count');
+const mergeClearAll       = document.getElementById('merge-clear-all');
+const mergeOptionsEl      = document.getElementById('merge-options');
+const mergeDateRangeEl    = document.getElementById('merge-date-range');
+const mergePeriodText     = document.getElementById('merge-period-text');
+const mergeFileCountText  = document.getElementById('merge-file-count-text');
+const mergeBtnEl          = document.getElementById('merge-btn');
+const mergeProgressSec    = document.getElementById('merge-progress-section');
+const mergeProgressLabel  = document.getElementById('merge-progress-label');
+const mergeProgressPct    = document.getElementById('merge-progress-pct');
+const mergeProgressBar    = document.getElementById('merge-progress-bar');
+const mergeProgressLog    = document.getElementById('merge-progress-log');
+const mergeErrorPanel     = document.getElementById('merge-error-panel');
+const mergeResultPanel    = document.getElementById('merge-result-panel');
+const mergeDownloadBtn    = document.getElementById('merge-download-btn');
+const mergeNewBtn         = document.getElementById('merge-new-btn');
+
+// Drag/drop handlers for merge zone
+mergeDropZone.addEventListener('dragover', e => { e.preventDefault(); mergeDropZone.classList.add('drag-over'); });
+mergeDropZone.addEventListener('dragleave', () => mergeDropZone.classList.remove('drag-over'));
+mergeDropZone.addEventListener('drop', e => {
+  e.preventDefault(); mergeDropZone.classList.remove('drag-over');
+  handleMergeFiles(Array.from(e.dataTransfer.files));
+});
+mergeDropZone.addEventListener('click', () => mergeFileInput.click());
+mergeFileInput.addEventListener('change', () => {
+  handleMergeFiles(Array.from(mergeFileInput.files));
+  mergeFileInput.value = '';
+});
+
+mergeClearAll.addEventListener('click', () => {
+  mergeFiles.length = 0;
+  renderMergeQueue();
+});
+
+// ── Extract date key from filename for sorting ─────────────────
+// Filename pattern: PA_002200011468_200910010345_DDMMYYYY_converted.xlsx
+// dateKey = the 8-digit date in the filename (e.g. 27012026)
+function extractDateKeyFromName(name) {
+  const m = name.match(/_(\d{8})_converted\.xlsx$/i);
+  return m ? m[1] : null;
+}
+
+// Convert DDMMYYYY → sortable YYYYMMDD
+function dateKeyToSort(dk) {
+  if (!dk || dk.length !== 8) return '99999999';
+  return dk.slice(4,8) + dk.slice(2,4) + dk.slice(0,2);
+}
+
+// ── Validate an xlsx is from this converter ────────────────────
+// We check that it has a 'Sales' sheet with the expected column header row
+async function validateMergeFile(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const wb = XLSX.read(data, { type: 'array' });
+
+        // Must have Sales sheet
+        if (!wb.SheetNames.includes('Sales')) {
+          return resolve({ valid: false, reason: 'Missing Sales sheet — not a converted PA file' });
+        }
+
+        const ws = wb.Sheets['Sales'];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+
+        // Find the column header row (contains DTOF TRN)
+        const hdrIdx = aoa.findIndex(row =>
+          row && row.some(c => c && String(c).trim().toUpperCase().includes('DTOF'))
+        );
+        if (hdrIdx === -1) {
+          return resolve({ valid: false, reason: 'Cannot find column headers — not a valid PA file' });
+        }
+
+        // Extract period label from meta row (row 0 if it's a merged cell string)
+        let periodLabel = '';
+        const metaCell = aoa[0] && aoa[0][0] ? String(aoa[0][0]) : '';
+        const pm = metaCell.match(/FROM\s+(\d{2}\/\d{2}\/\d{4})\s+TO\s+(\d{2}\/\d{2}\/\d{4})/i);
+        if (pm) periodLabel = pm[1] + ' – ' + pm[2];
+
+        resolve({ valid: true, reason: '', periodLabel, wb });
+      } catch(err) {
+        resolve({ valid: false, reason: 'Cannot read file: ' + err.message });
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// ── Handle dropped/selected files ─────────────────────────────
+async function handleMergeFiles(files) {
+  const xlsxFiles = files.filter(f => f.name.match(/\.xlsx$/i));
+  if (!xlsxFiles.length) {
+    showMergeError('No .xlsx files detected. Drop converted PA Excel files only.');
+    return;
+  }
+
+  mergeErrorPanel.classList.remove('show');
+  mergeResultPanel.classList.remove('show');
+
+  for (const file of xlsxFiles) {
+    // Check total cap
+    if (mergeFiles.length >= 5) {
+      showMergeError('Maximum 5 files allowed. Remove one before adding more.');
+      break;
+    }
+
+    // Check duplicate
+    const isDup = mergeFiles.some(mf => mf.name === file.name);
+    const dateKey = extractDateKeyFromName(file.name);
+
+    if (isDup) {
+      mergeFiles.push({ file, name: file.name, dateKey, periodLabel: '', valid: false, reason: 'Duplicate — already queued', duplicate: true });
+      renderMergeQueue();
+      continue;
+    }
+
+    // Validate
+    const result = await validateMergeFile(file);
+    mergeFiles.push({
+      file,
+      name: file.name,
+      dateKey,
+      periodLabel: result.periodLabel || '',
+      valid: result.valid,
+      reason: result.reason,
+      wb: result.wb || null,
+      duplicate: false
+    });
+    renderMergeQueue();
+  }
+}
+
+// ── Render the file queue ──────────────────────────────────────
+function renderMergeQueue() {
+  // Sort valid files by date
+  mergeFiles.sort((a, b) => dateKeyToSort(a.dateKey).localeCompare(dateKeyToSort(b.dateKey)));
+
+  mergeFileList.innerHTML = '';
+  const validFiles = mergeFiles.filter(mf => mf.valid);
+
+  mergeFiles.forEach((mf, idx) => {
+    const cls = mf.duplicate ? 'duplicate' : mf.valid ? 'valid' : 'invalid';
+    const icon = mf.duplicate ? '⚠️' : mf.valid ? '📗' : '❌';
+    const badgeCls = mf.duplicate ? 'dup' : mf.valid ? 'ok' : 'err';
+    const badgeText = mf.duplicate ? 'DUPLICATE' : mf.valid ? 'VALID' : 'INVALID';
+    const meta = mf.valid ? (mf.periodLabel || mf.name) : mf.reason;
+
+    const item = document.createElement('div');
+    item.className = 'merge-file-item ' + cls;
+    item.innerHTML = `
+      <div class="mfi-icon">${icon}</div>
+      <div class="mfi-info">
+        <div class="mfi-name">${mf.name}</div>
+        <div class="mfi-meta">${meta}</div>
+      </div>
+      <div class="mfi-badge ${badgeCls}">${badgeText}</div>
+      <button class="mfi-remove" data-idx="${idx}" title="Remove">✕</button>
+    `;
+    mergeFileList.appendChild(item);
+  });
+
+  // Remove button handlers
+  mergeFileList.querySelectorAll('.mfi-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = parseInt(btn.dataset.idx);
+      mergeFiles.splice(i, 1);
+      renderMergeQueue();
+    });
+  });
+
+  // Show/hide queue
+  const total = mergeFiles.length;
+  if (total > 0) {
+    mergeQueueEl.classList.add('show');
+    mergeQueueCount.textContent = total + ' file' + (total !== 1 ? 's' : '') + ' queued';
+  } else {
+    mergeQueueEl.classList.remove('show');
+  }
+
+  // Show options if ≥1 valid
+  if (validFiles.length >= 1) {
+    mergeOptionsEl.classList.add('show');
+    mergeBtnEl.disabled = false;
+    // Compute combined period
+    const sorted = validFiles.filter(mf => mf.periodLabel);
+    if (sorted.length > 0) {
+      // From the earliest start to the latest end
+      const starts = sorted.map(mf => {
+        const m = mf.periodLabel.match(/^(\d{2}\/\d{2}\/\d{4})/);
+        return m ? m[1] : '';
+      }).filter(Boolean);
+      const ends = sorted.map(mf => {
+        const m = mf.periodLabel.match(/(\d{2}\/\d{2}\/\d{4})$/);
+        return m ? m[1] : '';
+      }).filter(Boolean);
+      if (starts.length && ends.length) {
+        mergePeriodText.textContent = starts[0] + ' – ' + ends[ends.length - 1];
+      }
+    }
+    mergeFileCountText.textContent = validFiles.length;
+    mergeDateRangeEl.classList.add('show');
+  } else {
+    mergeOptionsEl.classList.remove('show');
+    mergeDateRangeEl.classList.remove('show');
+    mergeBtnEl.disabled = true;
+  }
+}
+
+// ── Merge button ───────────────────────────────────────────────
+mergeBtnEl.addEventListener('click', async () => {
+  const validFiles = mergeFiles.filter(mf => mf.valid);
+  if (!validFiles.length) return;
+
+  mergeBtnEl.disabled = true;
+  mergeProgressSec.classList.add('show');
+  mergeProgressLog.innerHTML = '';
+  mergeResultPanel.classList.remove('show');
+  mergeErrorPanel.classList.remove('show');
+
+  try {
+    await runMerge(validFiles);
+  } catch(err) {
+    showMergeError('Merge failed: ' + err.message);
+    console.error(err);
+    mergeBtnEl.disabled = false;
+  }
+});
+
+// ── Core merge function ────────────────────────────────────────
+async function runMerge(validFiles) {
+  const moptHeader    = document.getElementById('mopt-header').checked;
+  const moptFreeze    = document.getElementById('mopt-freeze').checked;
+  const moptStripe    = document.getElementById('mopt-stripe').checked;
+  const moptSourceCol = document.getElementById('mopt-source-col').checked;
+
+  setMergeProgress(5, 'Starting merge…');
+  addMergeLog('Loading ' + validFiles.length + ' file(s)…', 'active');
+
+  // Columns from the converter (12 standard cols)
+  const COLS = ['DTOF TRN','TRMNL ID','CARD NUMBER','TRXN TYPE','ACQ_REF_NBR','AUTH CODE','TRAN AMT','MSF AMT','TXN FEE','VAT AMT','NET AMT','TRXN DESP'];
+  const COLS_WITH_SRC = [...COLS, 'SOURCE WEEK'];
+
+  // Accumulated buckets
+  const allSales        = [];
+  const allRefunds      = [];
+  const allChargebacks  = [];
+
+  // Summary accumulators — keyed by description, values summed numerically
+  // We preserve the canonical order from the first file
+  const summaryOrder  = [];  // label order
+  const summaryTotals = {};  // label → running sum (numeric) or raw string for non-numeric
+
+  let combinedPeriod = '';
+  let allPeriods     = [];
+
+  // Read each file
+  for (let fi = 0; fi < validFiles.length; fi++) {
+    const mf = validFiles[fi];
+    setMergeProgress(5 + Math.round((fi / validFiles.length) * 75), `Reading ${mf.name}…`);
+    addMergeLog(`Reading file ${fi + 1}/${validFiles.length}: ${mf.name}`, 'active');
+
+    // Re-read the workbook (wb was stored during validation)
+    const wb = mf.wb;
+
+    // Source week label from filename date key (DDMMYYYY → "27 Jan 2026")
+    const dk = mf.dateKey || '';
+    let sourceLabel = mf.periodLabel || mf.name;
+    if (dk.length === 8) {
+      // Format: DD/MM/YYYY
+      sourceLabel = dk.slice(0,2) + '/' + dk.slice(2,4) + '/' + dk.slice(4,8);
+    }
+
+    // Track period
+    if (mf.periodLabel) allPeriods.push(mf.periodLabel);
+
+    // ── Read each transaction sheet ──────────────────────────
+    const sheetMap = {
+      'Sales':       allSales,
+      'Refunds':     allRefunds,
+      'Chargebacks': allChargebacks
+    };
+
+    for (const [sheetName, bucket] of Object.entries(sheetMap)) {
+      if (!wb.SheetNames.includes(sheetName)) continue;
+      const ws  = wb.Sheets[sheetName];
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+
+      // Find the header row index (contains DTOF TRN)
+      const hdrIdx = aoa.findIndex(row =>
+        row && row.some(c => c && String(c).trim().toUpperCase().includes('DTOF'))
+      );
+      if (hdrIdx === -1) continue;
+
+      // Data rows start after the header
+      for (let r = hdrIdx + 1; r < aoa.length; r++) {
+        const row = aoa[r];
+        if (!row || !row.some(c => c !== null && c !== undefined && c !== '')) continue;
+
+        // Normalise to exactly 12 columns
+        const normalised = COLS.map((_, ci) => {
+          const v = row[ci];
+          return (v === null || v === undefined) ? '' : String(v);
+        });
+
+        if (moptSourceCol) {
+          normalised.push(sourceLabel);
+        }
+        bucket.push(normalised);
+      }
+    }
+
+    // ── Read Summary sheet ───────────────────────────────────
+    if (wb.SheetNames.includes('Summary')) {
+      const ws  = wb.Sheets['Summary'];
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+
+      // Find header row with Description / Value
+      const hdrIdx = aoa.findIndex(row =>
+        row && row.some(c => c && String(c).trim().toUpperCase() === 'DESCRIPTION')
+      );
+      if (hdrIdx !== -1) {
+        for (let r = hdrIdx + 1; r < aoa.length; r++) {
+          const row = aoa[r];
+          if (!row || !row[0]) continue;
+          const label = String(row[0]).trim();
+          const valRaw = row[1] !== null && row[1] !== undefined ? String(row[1]).trim() : '0';
+
+          // Skip the Merchant No line (not a numeric total)
+          if (label.toUpperCase() === 'MERCHANT NO') continue;
+
+          if (!summaryTotals.hasOwnProperty(label)) {
+            summaryOrder.push(label);
+            summaryTotals[label] = 0;
+          }
+
+          const num = parseFloat(valRaw.replace(/,/g, ''));
+          if (!isNaN(num)) {
+            summaryTotals[label] += num;
+          }
+        }
+      }
+    }
+
+    addMergeLog(`File ${fi + 1} done (sales: ${allSales.length}, refunds: ${allRefunds.length}, cb: ${allChargebacks.length})`, 'done');
+  }
+
+  // Build combined period string
+  if (allPeriods.length > 0) {
+    const firstStart = allPeriods[0].match(/^(\d{2}\/\d{2}\/\d{4})/);
+    const lastEnd    = allPeriods[allPeriods.length - 1].match(/(\d{2}\/\d{2}\/\d{4})$/);
+    if (firstStart && lastEnd) {
+      combinedPeriod = 'COMBINED PERIOD: ' + firstStart[1] + ' TO ' + lastEnd[1];
+    }
+  }
+
+  setMergeProgress(82, 'Building merged Excel…');
+  addMergeLog('Writing merged workbook…', 'active');
+
+  const outWb = XLSX.utils.book_new();
+  const finalCols = moptSourceCol ? COLS_WITH_SRC : COLS;
+
+  // Build the merged header info text
+  const headerText = combinedPeriod
+    ? (combinedPeriod + '\nMerchant No : 002200011468\nGrowthNext FZC')
+    : 'COMBINED PA REPORT\nMerchant No : 002200011468\nGrowthNext FZC';
+
+  // ── Build each sheet ─────────────────────────────────────
+  buildMergedSheet(outWb, 'Sales',       allSales,       finalCols, moptHeader ? headerText : '', moptFreeze, moptStripe, 'sales');
+  buildMergedSheet(outWb, 'Refunds',     allRefunds,     finalCols, moptHeader ? headerText : '', moptFreeze, moptStripe, 'refunds');
+  buildMergedSheet(outWb, 'Chargebacks', allChargebacks, finalCols, moptHeader ? headerText : '', moptFreeze, moptStripe, 'chargebacks');
+
+  // ── Build summed Summary sheet ───────────────────────────
+  buildMergedSummarySheet(outWb, summaryOrder, summaryTotals, moptHeader ? headerText : '', validFiles.length);
+
+  setMergeProgress(96, 'Finalizing…');
+
+  const wbout = XLSX.write(outWb, { bookType: 'xlsx', type: 'array', cellStyles: true });
+  mergeWorkbookBlob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+  // Build output filename from date range
+  const dateRange = allPeriods.length > 0
+    ? allPeriods[0].replace(/\//g, '').slice(0,8) + '_' + allPeriods[allPeriods.length-1].replace(/\//g, '').slice(9)
+    : 'combined';
+  mergeOutputFilename = 'PA_merged_' + dateRange.replace(/\s/g,'') + '.xlsx';
+
+  setMergeProgress(100, 'Complete!');
+  addMergeLog('Merged file ready ✓', 'done');
+
+  setTimeout(() => {
+    mergeProgressSec.classList.remove('show');
+
+    document.getElementById('mstat-sales').textContent       = allSales.length.toLocaleString();
+    document.getElementById('mstat-refunds').textContent     = allRefunds.length.toLocaleString();
+    document.getElementById('mstat-chargebacks').textContent = allChargebacks.length.toLocaleString();
+    document.getElementById('mstat-files').textContent       = validFiles.length;
+
+    document.getElementById('mbd-sales').textContent         = allSales.length + ' rows';
+    document.getElementById('mbd-refunds').textContent       = allRefunds.length + ' rows';
+    document.getElementById('mbd-chargebacks').textContent   = allChargebacks.length + ' rows';
+    document.getElementById('mbd-summary').textContent       = summaryOrder.length + ' lines';
+
+    document.getElementById('merge-result-sub').textContent  = mergeOutputFilename;
+    mergeResultPanel.classList.add('show');
+    mergeBtnEl.disabled = false;
+  }, 500);
+}
+
+// ── Build a merged transaction sheet ──────────────────────────
+function buildMergedSheet(wb, sheetName, rows, cols, headerText, optFreeze, optStripe, type) {
+  const wsData = [];
+  let dataStartRow = 0;
+
+  if (headerText) {
+    wsData.push([headerText]);
+    wsData.push(['']);
+    dataStartRow = 2;
+  }
+
+  wsData.push(cols);
+  for (const r of rows) wsData.push(r);
+
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  if (headerText) {
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: cols.length - 1 } }];
+  }
+
+  // Column widths (12 standard + optional source col)
+  const colWidths = [
+    { wch: 9 }, { wch: 11 }, { wch: 17 }, { wch: 14 }, { wch: 27 },
+    { wch: 10 }, { wch: 11 }, { wch: 11 }, { wch: 9 }, { wch: 9 }, { wch: 11 }, { wch: 13 }
+  ];
+  if (cols.length > 12) colWidths.push({ wch: 16 }); // SOURCE WEEK
+  ws['!cols'] = colWidths;
+
+  ws['!rows'] = [];
+  if (headerText) ws['!rows'][0] = { hpx: 60 };
+  ws['!rows'][dataStartRow] = { hpx: 28 };
+
+  if (optFreeze) {
+    ws['!freeze'] = { xSplit: 0, ySplit: dataStartRow + 1 };
+  }
+
+  const hdrColors = { sales: '1F3864', refunds: '7A4F00', chargebacks: '6B1220' };
+  const hdrColor  = hdrColors[type] || '1F3864';
+  const stripColors = { sales: 'F5F7FA', refunds: 'FFF8EC', chargebacks: 'FFF5F7' };
+  const stripColor  = stripColors[type] || 'F5F7FA';
+  const metaColors  = { sales: 'E8F0FE', refunds: 'FFF8EC', chargebacks: 'FFF0F2' };
+  const metaColor   = metaColors[type] || 'E8F0FE';
+
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const addr = XLSX.utils.encode_cell({ r: R, c: C });
+      if (!ws[addr]) ws[addr] = { v: '', t: 's' };
+
+      const isHdrRow  = (R === dataStartRow);
+      const isMetaRow = (!!headerText && R === 0);
+      const isData    = R > dataStartRow;
+      const isEven    = (R - dataStartRow) % 2 === 0;
+      const isNumCol  = C >= 6 && C <= 10;
+
+      let bgColor = 'FFFFFF';
+      if (isMetaRow)                             bgColor = metaColor;
+      else if (isHdrRow)                         bgColor = hdrColor;
+      else if (optStripe && isData && isEven)    bgColor = stripColor;
+
+      ws[addr].s = {
+        font: {
+          name: 'Arial',
+          sz: isHdrRow ? 10 : 9,
+          bold: isHdrRow || isMetaRow,
+          color: { rgb: isHdrRow ? 'FFFFFF' : '1a1a2e' }
+        },
+        fill: { patternType: 'solid', fgColor: { rgb: bgColor } },
+        alignment: {
+          horizontal: isMetaRow ? 'left' : isHdrRow ? 'center' : isNumCol ? 'right' : 'center',
+          vertical: 'center',
+          wrapText: isMetaRow
+        },
+        border: {
+          left:   { style: 'thin', color: { rgb: 'DDDDDD' } },
+          right:  { style: 'thin', color: { rgb: 'DDDDDD' } },
+          top:    { style: 'thin', color: { rgb: 'DDDDDD' } },
+          bottom: { style: 'thin', color: { rgb: 'DDDDDD' } }
+        }
+      };
+    }
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+}
+
+// ── Build the summed Summary sheet ────────────────────────────
+function buildMergedSummarySheet(wb, summaryOrder, summaryTotals, headerText, fileCount) {
+  const wsData = [];
+  let dataStartRow = 0;
+
+  if (headerText) {
+    wsData.push([headerText]);
+    wsData.push(['']);
+    dataStartRow = 2;
+  }
+
+  wsData.push(['Description', 'Combined Total (' + fileCount + ' weeks)']);
+
+  for (const label of summaryOrder) {
+    const val = summaryTotals[label];
+    // Format to 2 decimal places for known amount fields, keep as-is for counts
+    const formatted = (typeof val === 'number' && !isNaN(val))
+      ? (Number.isInteger(val) && Math.abs(val) < 100000 && label.toUpperCase().includes('TRANSACTIONS') && !label.toUpperCase().includes('VALUE')
+          ? val.toString()   // transaction counts stay as integers
+          : val.toFixed(2))
+      : String(val);
+    wsData.push([label, formatted]);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  if (headerText) {
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }];
+    ws['!rows'] = [];
+    ws['!rows'][0] = { hpx: 60 };
+  }
+
+  ws['!cols'] = [{ wch: 52 }, { wch: 28 }];
+
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const addr = XLSX.utils.encode_cell({ r: R, c: C });
+      if (!ws[addr]) ws[addr] = { v: '', t: 's' };
+
+      const isHdrRow  = (R === dataStartRow);
+      const isMetaRow = (!!headerText && R === 0);
+      const isData    = R > dataStartRow;
+      const isEven    = (R - dataStartRow) % 2 === 0;
+      const isValCol  = C === 1;
+
+      const cellVal   = (ws[addr].v || '').toString().toUpperCase();
+      const isNetRow  = cellVal.includes('NET PAYABLE');
+
+      let bgColor = 'FFFFFF';
+      if (isMetaRow)                 bgColor = 'EBF5FB';
+      else if (isHdrRow)             bgColor = '1B4F72';
+      else if (isNetRow)             bgColor = 'D6EAF8';
+      else if (isData && isEven)     bgColor = 'F4F6F7';
+
+      ws[addr].s = {
+        font: {
+          name: 'Arial', sz: isHdrRow ? 10 : 9,
+          bold: isHdrRow || isMetaRow || isNetRow,
+          color: { rgb: isHdrRow ? 'FFFFFF' : '1a1a2e' }
+        },
+        fill: { patternType: 'solid', fgColor: { rgb: bgColor } },
+        alignment: {
+          horizontal: isMetaRow ? 'left' : isValCol && !isHdrRow ? 'right' : isHdrRow ? 'center' : 'left',
+          vertical: 'center',
+          wrapText: isMetaRow
+        },
+        border: {
+          left:   { style: 'thin', color: { rgb: 'DDDDDD' } },
+          right:  { style: 'thin', color: { rgb: 'DDDDDD' } },
+          top:    { style: 'thin', color: { rgb: 'DDDDDD' } },
+          bottom: { style: 'thin', color: { rgb: 'DDDDDD' } }
+        }
+      };
+    }
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+}
+
+// ── Merge UI helpers ───────────────────────────────────────────
+function setMergeProgress(pct, label) {
+  mergeProgressBar.style.width  = pct + '%';
+  mergeProgressPct.textContent  = pct + '%';
+  if (label) mergeProgressLabel.textContent = label;
+}
+
+function addMergeLog(text, type = '') {
+  const prev = mergeProgressLog.querySelector('.log-entry.active');
+  if (prev) prev.classList.replace('active', 'done');
+  const el = document.createElement('div');
+  el.className = 'log-entry ' + type;
+  el.innerHTML = `<div class="log-dot"></div><span>${text}</span>`;
+  mergeProgressLog.appendChild(el);
+  mergeProgressLog.scrollTop = mergeProgressLog.scrollHeight;
+}
+
+function showMergeError(msg) {
+  mergeErrorPanel.textContent = '⚠ ' + msg;
+  mergeErrorPanel.classList.add('show');
+  mergeProgressSec.classList.remove('show');
+}
+
+// Merge download button
+mergeDownloadBtn.addEventListener('click', () => {
+  if (!mergeWorkbookBlob) return;
+  const url = URL.createObjectURL(mergeWorkbookBlob);
+  const a = document.createElement('a');
+  a.href = url; a.download = mergeOutputFilename; a.click();
+  URL.revokeObjectURL(url);
+});
+
+// Reset merge
+mergeNewBtn.addEventListener('click', () => {
+  mergeFiles.length = 0;
+  mergeWorkbookBlob = null;
+  mergeResultPanel.classList.remove('show');
+  mergeErrorPanel.classList.remove('show');
+  mergeProgressSec.classList.remove('show');
+  mergeQueueEl.classList.remove('show');
+  mergeOptionsEl.classList.remove('show');
+  renderMergeQueue();
 });
 
 // ─── PDF text parsing ─────────────────────────────────────────
