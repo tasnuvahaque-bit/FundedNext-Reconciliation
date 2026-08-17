@@ -2764,6 +2764,33 @@
           c.fees    = c.totalFees; // alias for renderSummary
         });
 
+        // ── Wallet ID breakdown ──
+        const walletMap = {};
+        purchase.forEach(r => {
+          const wid = String(r['Wallet ID'] || '').trim() || 'Unknown';
+          const cur = (r['Settlement Currency'] || 'USD').trim();
+          const intF = Math.abs(n(r['Interchange Fee']));
+          const schF = Math.abs(n(r['Scheme Fee']));
+          const acqF = Math.abs(n(r['Acquirer Fee']));
+          if (!walletMap[wid]) walletMap[wid] = { count: 0, gross: 0, totalFees: 0, refAmt: 0, cbAmt: 0, netCalc: 0, currency: cur };
+          walletMap[wid].count++;
+          walletMap[wid].gross     += n(r['Settlement Amount']);
+          walletMap[wid].totalFees += intF + schF + acqF;
+        });
+        refund.forEach(r => {
+          const wid = String(r['Wallet ID'] || '').trim() || 'Unknown';
+          const cur = (r['Settlement Currency'] || 'USD').trim();
+          if (!walletMap[wid]) walletMap[wid] = { count: 0, gross: 0, totalFees: 0, refAmt: 0, cbAmt: 0, netCalc: 0, currency: cur };
+          walletMap[wid].refAmt += Math.abs(n(r['Settlement Amount']));
+        });
+        chargeback.forEach(r => {
+          const wid = String(r['Wallet ID'] || '').trim() || 'Unknown';
+          const cur = (r['Settlement Currency'] || 'USD').trim();
+          if (!walletMap[wid]) walletMap[wid] = { count: 0, gross: 0, totalFees: 0, refAmt: 0, cbAmt: 0, netCalc: 0, currency: cur };
+          walletMap[wid].cbAmt += Math.abs(n(r['Settlement Amount']));
+        });
+        Object.values(walletMap).forEach(w => { w.netCalc = w.gross - w.totalFees - w.refAmt - w.cbAmt; });
+
         // Totals (for CRB gross/fees/net — pick primary cur or sum USD)
         const totalGross = Object.values(byCur).reduce((s,c) => s+c.gross, 0);
         const totalFees  = Object.values(byCur).reduce((s,c) => s+c.totalFees, 0);
@@ -2805,7 +2832,7 @@
 
         return {
           type: "unlimit",
-          byCur, pmMap, countryMap,
+          byCur, pmMap, countryMap, walletMap,
           gross: totalGross, fees: totalFees, net: totalNet,
           cur: Object.keys(byCur)[0] || "USD",
           count: purchase.length, refCount: refund.length, cbCount: chargeback.length,
@@ -5632,7 +5659,29 @@ const CRB_ISO3_TO_ALPHA2 = {
       const fp = v.amt>0?(v.fee/v.amt*100).toFixed(2)+"%":"—";
       return "<tr><td style='font-weight:600;text-transform:capitalize'>"+pm+"</td><td class='r dim'>"+v.count.toLocaleString()+"</td><td class='r' style='color:var(--accent2)'>"+fmtC(v.amt,pmCur)+"</td><td class='r' style='color:var(--fee-color)'>"+fmtC(v.fee,pmCur)+"</td><td class='r dim'>"+fp+"</td><td class='r' style='color:var(--green)'>"+fmtC(v.net,pmCur)+"</td></tr>";
     }).join("")}
-    </tbody></table></div>` : "<p style='color:var(--text3);font-size:12px;padding:10px'>Upload the Order Report to see payment method breakdown</p>"}`;
+    </tbody></table></div>` : "<p style='color:var(--text3);font-size:12px;padding:10px'>Upload the Order Report to see payment method breakdown</p>"}
+  ${(()=>{
+    const wEntries = Object.entries(d.walletMap||{}).sort((a,b)=>b[1].gross-a[1].gross);
+    if (!wEntries.length) return "";
+    return `<div class="section-hd">Wallet ID Breakdown</div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Wallet ID</th><th class="r">Purchases</th><th class="r">Gross</th><th class="r">Fees</th><th class="r">Fee %</th><th class="r">Refunds</th><th class="r">Chargebacks</th><th class="r">Net</th></tr></thead>
+    <tbody>${wEntries.map(([wid,w])=>{
+      const wCur = w.currency||"USD";
+      const fp = w.gross>0?(w.totalFees/w.gross*100).toFixed(2)+"%":"—";
+      return `<tr>
+        <td style="font-weight:600;color:var(--accent2)">${wid}</td>
+        <td class="r dim">${w.count.toLocaleString()}</td>
+        <td class="r" style="color:var(--accent2)">${fmtC(w.gross,wCur)}</td>
+        <td class="r" style="color:var(--fee-color)">${fmtC(w.totalFees,wCur)}</td>
+        <td class="r dim">${fp}</td>
+        <td class="r" style="color:${w.refAmt>0?"var(--yellow)":"var(--text3)"}">${w.refAmt>0?"-"+fmtC(w.refAmt,wCur):"—"}</td>
+        <td class="r" style="color:${w.cbAmt>0?"var(--red)":"var(--text3)"}">${w.cbAmt>0?"-"+fmtC(w.cbAmt,wCur):"—"}</td>
+        <td class="r" style="color:var(--green);font-weight:600">${fmtC(w.netCalc,wCur)}</td>
+      </tr>`;
+    }).join("")}
+    </tbody></table></div>`;
+  })()}`;
           return;
         }
 
